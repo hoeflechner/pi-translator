@@ -1,14 +1,20 @@
 # pi-translator — Language Tail for pi
 
-**Status: v1 reference implementation VERIFIED END-TO-END (2026-10-10).**
+**Status: mechanism VERIFIED end-to-end (2026-10-10). The generic
+implementation per `03-design-language-tail.md` is the next step.**
 Concept: the agent always **works in the machine's language** (English by
 default — its strongest token region). When the user writes in another
 language, the final answer is rewritten by a **separate, context-free
-translation call** on the delivery path. The model itself never generates
-the target language, so long-context language corruption can never surface.
+translation call on the delivery path**, using a **language-neutral
+prompt**: the translator is simply told which language to produce. The
+model itself never generates the target language, so long-context
+language corruption can never surface.
 
 **This is not a German patch. German was just the symptom that proved the
-mechanism. The design target is: any target language, pluggable.**
+mechanism. The design target is: any target language, zero language-
+specific code or prompts.** Style rules a human wants (e.g. the German
+informal „du“) are user-supplied text appended to the generic translator
+prompt (`promptAppend`) — never shipped built-in per language.
 
 ## Why this exists (short version — full evidence in 01-findings.md)
 
@@ -28,49 +34,37 @@ in a fresh context. That removes the entire failure regime.
 | File | Content |
 |---|---|
 | `01-findings.md` | All measured evidence: session analysis, model facts, dose-response, probes, root causes, known upstream issues, empty-bubble bug |
-| `02-architecture.md` | Chosen mechanism + exact pi extension API ground truth (verified signatures, test log) |
-| `03-design-language-tail.md` | **The implementation spec**: generic multi-language design, language profiles, validation, config, test plan, open questions |
-| `04-training-track.md` | Optional downstream track: harvesting the tail's own pairs to train a dedicated translator (DPO/GRPO on H200/SLURM) |
-| `reference/german-tail-v1.ts` | The verified working v1 (German-specific) — the thing to generalize |
+| `02-architecture.md` | Chosen mechanism + exact pi extension API ground truth (verified signatures, v1 test log) |
+| `03-design-language-tail.md` | **The implementation spec**: language-agnostic translator prompt, per-language detector/validation tables, config, test plan, open questions |
 
-## Quickstart (verified commands)
+## Archived v1 (German-specific)
 
-```
-/data/user/pi-translator/
-├─ docs/            ← this documentation set
-└─ reference/german-tail-v1.ts   ← verified v1 code (German-specific)
-```
+The verified German-specific v1 extension and the optional training track
+were removed on 2026-10-10 (operator decision: no harvesting, no
+German-specific artifacts). Both are preserved in git snapshot `<initial-commit>`:
 
 ```bash
-cd /data/user/pi-translator
-
-# load smoke test
-pi --extension ./reference/german-tail-v1.ts --model the local dense model \
-   --print "Reply with exactly: extension-load-ok"
-
-# full round-trip: German question → English working draft → German delivery
-GERMAN_TAIL=1 pi --extension ./reference/german-tail-v1.ts --model the local dense model \
-   --print "Was ist ein Port-Konflikt? Antworte in genau zwei Sätzen."
+git show <initial-commit>:reference/german-tail-v1.ts   # the verified v1 code
+git show <initial-commit>:docs/04-training-track.md     # the parked training track
 ```
 
-Env knobs (v1): `GERMAN_TAIL=1` (enable at boot), `GERMAN_TAIL_MODEL=provider/id`
-(default `the local dense model`). Per-session toggle: `/gtranslate [on|off]`.
-
-## Reference implementation layout
-
-| File | Content |
-|---|---|
-| `reference/german-tail-v1.ts` | The verified working v1 (German-specific) — the thing to generalize; implemented from 03 spec |
+The v1 test log (02 §test-log) records the end-to-end verification of the
+mechanism: load smoke, working-language guideline overriding German input,
+German round-trip delivery, and a detector miss caught by unit testing.
 
 ## Ground rules for implementation
 
 1. **Never translate from the model's context** — the translation call is
-   context-free by design (only: tiny system prompt + user question for
-   disambiguation + the draft answer).
+   context-free by design (only: tiny generic system prompt + user question
+   for disambiguation + the draft answer).
 2. **Every translation is validated** (script guard, non-empty, stopReason)
    and on failure falls back to the working-language original, never to a
    silent empty bubble.
-3. **Every round-trip is harvested** as a training pair (see 04) — the
-   product doubles as its own dataset.
-4. Do NOT auto-install into a shared instance's extension path without
+3. **The translator prompt is language-neutral.** No per-language style
+   hints ship with the tail. The one user-facing knob for style is
+   `promptAppend` (settings, per language + global) — e.g. German
+   informal-du is expressed there, by the user, not in code.
+4. **Nothing is harvested** — the tail persists no extra records; only the
+   normal session transcript exists.
+5. Do NOT auto-install into a shared instance's extension path without
    operator sign-off (sessiond loads extensions at boot for ALL users).

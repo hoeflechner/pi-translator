@@ -11,10 +11,10 @@ agent loop (working language = English)    (never target language yourself)"
    ▼
 message_end (final assistant message)
    │  IF target = detect(user prompt) ≠ working:
-   │     translateOnce( model, fresh Context{ systemPrompt_lang,
-   │        [ "Kontext: <user question>\n\nZu übersetzen: <draft>" ] } )
+   │     translateOnce( model, fresh Context{ generic prompt template
+   │        ("Translate the DRAFT into <LanguageName>" + user append),
+   │        [ "QUESTION: <user prompt>\n\nDRAFT: <draft>" ] } )
    │     validate (non-empty, stopReason≠error, script-guard)  ── fail → retry once → FALLBACK to working-language draft + notify
-   │     appendEntry(pair)   ← training corpus side-product
    └─▶ return { message: {...msg, content:[...nonTextBlocks, text:translation]} }
 ```
 
@@ -88,8 +88,8 @@ components needed here.
 
 ## v1 reference implementation — test log (all PASSED 2026-10-10)
 
-`reference/german-tail-v1.ts` (copy of the verified file
-`/home/user/analysis/german-tail.ts`):
+The v1 file (removed from the tree 2026-10-10; recover via
+`git show <initial-commit>:reference/german-tail-v1.ts`) passed:
 
 1. Load smoke: `pi --extension ... --model the local dense model --print
    "Reply with exactly: extension-load-ok"` → `extension-load-ok`.

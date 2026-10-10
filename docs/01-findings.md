@@ -82,8 +82,9 @@ artifact rate ~2.5×'s; the tail removes the exposure entirely.**
    identical to our `zwei⟨CJK⟩liche`.
 
 No German-specific official-tracker report for this model existed as of
-2026-10-10. **Our measurement could be filed upstream** (eval harness from
-04-training-track.md would be the evidence package).
+2026-10-10. **Our measurement could be filed upstream** (the eval harness
+of the dropped training track — archived in git snapshot `<initial-commit>` —
+would be the evidence package).
 
 ## 5. Probes run against the live the serving router endpoint (2026-10-10)
 

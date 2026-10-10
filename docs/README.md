@@ -4,15 +4,12 @@
 free translation, model context 100% working language, all drills passed.
 v1 spec: `03-design-language-tail.md`; v2: `05-plan-v2.md`.**
 Concept: the agent always **works in the machine's language** (English by
-default — its strongest token region). When the user writes in another
-language, the final answer is rewritten by a **separate, context-free
-translation call on the delivery path**, using a **language-neutral
-prompt**: the translator itself identifies the language of the user
-question and translates the answer into it (same language → a `NONE`
-marker → passthrough). No detector, no language tables — nothing in the
-extension knows which language the user speaks. The
-model itself never generates the target language, so long-context
-language corruption can never surface.
+default — its strongest token region). Both directions of a turn are wrapped
+by **context-free LLM translation calls** (question → working language for
+the model; answer → the user's language for delivery), and a `context`
+handler hands the model back its working-language originals on every later
+call — the model context stays 100% working language, the transcript stays
+the user's language.
 
 **This is not a German patch. German was just the symptom that proved the
 mechanism. The design target is: any target language, zero language-

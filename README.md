@@ -128,6 +128,11 @@ word-overlap guard.
   user's language, the answer passes through and user style rules are not
   re-applied. Prompt translation makes this disobedience rare (the model now
   reads English input); forced-target mode always re-normalizes.
+* **Do not run the tail on a translator-corrupted agent model without
+  pinning `model`.** Field report 2026-10-10: with the agent model as
+  translator default on the corrupting Model MoE, the translator produced the
+  model's own corruption class (refused by the guards, visible fallback to
+  the original — correct behavior, degraded UX). Pin a clean model.
 * Whether pi's compaction path passes through `context` is untested — watch
   item for very long sessions
   ([`docs/05` §deviations](docs/05-plan-v2.md)).

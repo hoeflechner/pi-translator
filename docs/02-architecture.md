@@ -72,7 +72,7 @@ pi.on("message_end", (event, ctx) => {
   return { message: {...} };  // must keep role "assistant"
 });
 
-pi.registerCommand("langtail", { description, handler: async (args, ctx) => {...} });
+pi.registerCommand("translator", { description, handler: async (args, ctx) => {...} });
 pi.appendEntry(customType: string, data?: unknown);  // durable, EXCLUDED from model context
 
 // ModelRegistry (ctx.modelRegistry):

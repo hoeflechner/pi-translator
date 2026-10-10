@@ -1,4 +1,4 @@
-# 03 — Implementation spec: `language-tail` (generic, any target language)
+# 03 — Implementation spec: `pi-translator` (generic, any target language)
 
 Implements the mechanism verified in 02 — one context-free translator call
 that **detects the target language itself**. No detector, no language
@@ -20,8 +20,8 @@ tables, no language-specific prompt text, no harvesting.
   language, the translator outputs exactly `NONE` and the extension
   delivers the original draft untouched (no rewrite of same-language
   answers).
-- **Tail off / forced target**: `/langtail off` skips the call entirely;
-  `/langtail <language name>` forces that language and skips question
+- **Tail off / forced target**: `/translator off` skips the call entirely;
+  `/translator <language name>` forces that language and skips question
   detection (the forced name replaces the detection instruction).
 
 ## 2. The single translator call
@@ -63,7 +63,7 @@ when you translate into that language):
   (e.g. `[de] Sprich den Leser in direkter Anrede mit „du" an…`). The
   translator itself decides which label matches its target — the
   extension never interprets them. Empty block if no append configured.
-- Forced-target mode (`/langtail <name>`): the identify/NONE rules above
+- Forced-target mode (`/translator <name>`): the identify/NONE rules above
   are replaced by "Always translate the DRAFT into <name>" — no
   passthrough, the output is always delivered in that language.
 - Message payload: `QUESTION:\n<user prompt>\n\nDRAFT:\n<draft answer>`.
@@ -87,16 +87,16 @@ Never deliver an empty bubble, never loop. `NONE` short-circuits steps
 
 ## 5. Config & commands
 
-- Env boot defaults: `LANG_TAIL=1` enable; `LANG_TAIL_WORKING=en`;
-  `LANG_TAIL_TARGET=auto|<language name>|off`; `LANG_TAIL_MODEL=provider/id`
+- Env boot defaults: `PI_TRANSLATOR=1` enable; `PI_TRANSLATOR_WORKING=en`;
+  `PI_TRANSLATOR_TARGET=auto|<language name>|off`; `PI_TRANSLATOR_MODEL=provider/id`
   translator. (No per-language model overrides — the extension does not
   know the language before the call.)
-- Command `/langtail [on|off|auto|<language name>]`, plus status output
+- Command `/translator [on|off|auto|<language name>]`, plus status output
   listing the translator model and configured appends.
 - Settings: `{cwd}/.pi/settings.json` block:
 
 ```json
-{ "language-tail": {
+{ "pi-translator": {
     "working": "en",
     "target": "auto",
     "model": "the local dense model",
@@ -128,7 +128,7 @@ Never deliver an empty bubble, never loop. `NONE` short-circuits steps
    detected, never configured per turn.
 4. E2E tool-heavy turn (bash/read): intermediate narration stays working
    language; only final message translated.
-5. Fallback drill: point `LANG_TAIL_MODEL` at a bogus id → notify + working
+5. Fallback drill: point `PI_TRANSLATOR_MODEL` at a bogus id → notify + working
    language delivered, no crash. Also: translator answers a non-exact
    pseudo-NONE → treated as a real (failed) translation, fallback, no
    English-leak labeled as success.

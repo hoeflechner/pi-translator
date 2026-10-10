@@ -1,5 +1,5 @@
 /**
- * language-tail — the agent always works in the working language (English by
+ * pi-translator — the agent always works in the working language (English by
  * default); every final answer is delivered in the user's language by ONE
  * context-free LLM call that detects that language itself.
  *
@@ -12,9 +12,9 @@
  * Style wishes are user-supplied `promptAppend` entries rendered into the
  * generic prompt; the translator applies the ones matching its target.
  *
- * Boot: LANG_TAIL=1, or a "language-tail" block in settings (see spec §5).
- * Per session: /langtail [on|off|auto|<language name>].
- * Env: LANG_TAIL_WORKING, LANG_TAIL_TARGET, LANG_TAIL_MODEL, LANG_TAIL_DEBUG=1.
+ * Boot: PI_TRANSLATOR=1, or a "pi-translator" block in settings (see spec §5).
+ * Per session: /translator [on|off|auto|<language name>].
+ * Env: PI_TRANSLATOR_WORKING, PI_TRANSLATOR_TARGET, PI_TRANSLATOR_MODEL, PI_TRANSLATOR_DEBUG=1.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { readFileSync } from "node:fs";
@@ -25,7 +25,7 @@ import { join } from "node:path";
 // raw code is the fallback for anything unlisted. Not a target-language table.
 const LANG_NAMES: Record<string, string> = { en: "English", de: "German", fr: "French", es: "Spanish", it: "Italian" };
 
-/* ---------- pure helpers (exported for language-tail.test.ts) ---------- */
+/* ---------- pure helpers (exported for pi-translator.test.ts) ---------- */
 
 export function proseOnly(text: string): string {
 	return text
@@ -93,8 +93,8 @@ export function renderAppend(append: Record<string, string> | undefined): string
 	);
 }
 
-/** Spec §3: the ONE generic template. `forced` (from /langtail <name> or
- *  LANG_TAIL_TARGET) replaces the detect/NONE block; no passthrough then. */
+/** Spec §3: the ONE generic template. `forced` (from /translator <name> or
+ *  PI_TRANSLATOR_TARGET) replaces the detect/NONE block; no passthrough then. */
 export function buildSystemPrompt(workingName: string, append: string, forced: string | null): string {
 	const detect = forced
 		? `Always translate the DRAFT into ${forced}.`
@@ -123,7 +123,7 @@ function loadSettings(cwd: string): TailSettings | null {
 	// shortcut: first block wins (project overrides global); merge per-key when it ever bites.
 	for (const path of [join(cwd, ".pi", "settings.json"), join(homedir(), ".pi", "agent", "settings.json")]) {
 		try {
-			const block = JSON.parse(readFileSync(path, "utf-8"))?.["language-tail"];
+			const block = JSON.parse(readFileSync(path, "utf-8"))?.["pi-translator"];
 			if (block && typeof block === "object") return block as TailSettings;
 		} catch {
 			/* missing or invalid file = fall through to defaults */
@@ -185,16 +185,16 @@ async function translateOnce(
 
 export default function (pi: ExtensionAPI) {
 	let settings: TailSettings | null | undefined; // undefined = not loaded yet
-	let enabled = process.env.LANG_TAIL === "1";
+	let enabled = process.env.PI_TRANSLATOR === "1";
 	let forced: string | null = null;
 	let targetResolved = false;
 	let lastUserPrompt = "";
 
 	const dbg = (msg: string) => {
-		if (process.env.LANG_TAIL_DEBUG === "1") console.error(`[langtail] ${msg}`);
+		if (process.env.PI_TRANSLATOR_DEBUG === "1") console.error(`[pi-translator] ${msg}`);
 	};
 	const notify = (ctx: any, msg: string) => {
-		if (ctx.hasUI) ctx.ui.notify(`language-tail: ${msg}`, "warning");
+		if (ctx.hasUI) ctx.ui.notify(`pi-translator: ${msg}`, "warning");
 		dbg(msg);
 	};
 
@@ -204,7 +204,7 @@ export default function (pi: ExtensionAPI) {
 		if (!targetResolved) {
 			const s = settings ?? {};
 			if (settings && (s.target ?? "auto") !== "off") enabled = true; // a configured block means intent
-			const target = process.env.LANG_TAIL_TARGET ?? s.target ?? "auto";
+			const target = process.env.PI_TRANSLATOR_TARGET ?? s.target ?? "auto";
 			if (target === "off") enabled = false;
 			else if (target !== "auto") forced = target;
 			targetResolved = true;
@@ -212,13 +212,25 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	const workingName = () => {
-		const w = process.env.LANG_TAIL_WORKING ?? settings?.working ?? "en";
+		const w = process.env.PI_TRANSLATOR_WORKING ?? settings?.working ?? "en";
 		return LANG_NAMES[w] ?? w;
 	};
-	const modelSpec = () => process.env.LANG_TAIL_MODEL ?? settings?.model ?? "the local dense model";
+	const modelOverride = () => process.env.PI_TRANSLATOR_MODEL || settings?.model || null;
 
-	pi.registerCommand("langtail", {
-		description: "Language tail: agent works in the working language, final answers delivered in the user's language. /langtail [on|off|auto|<language name>]",
+	// Translator defaults to the agent's own model (spec §5); an env/settings
+	// override pins a different one (e.g. the clean 27B behind a weak worker).
+	function resolveTranslator(ctx: any): { model: any; label: string } | null {
+		const spec = modelOverride();
+		if (spec) {
+			const [provider, ...rest] = spec.split("/");
+			const model = ctx.modelRegistry.find(provider, rest.join("/"));
+			return model ? { model, label: spec } : null;
+		}
+		return ctx.model ? { model: ctx.model, label: `${ctx.model.provider}/${ctx.model.id}` } : null;
+	}
+
+	pi.registerCommand("translator", {
+		description: "pi-translator: agent works in the working language, final answers delivered in the user's language. /translator [on|off|auto|<language name>]",
 		handler: async (args: string, ctx: any) => {
 			ensureSettings(ctx);
 			const raw = args.trim();
@@ -233,12 +245,13 @@ export default function (pi: ExtensionAPI) {
 				forced = raw;
 			}
 			const appends = Object.keys(settings?.promptAppend ?? {});
+			const translator = resolveTranslator(ctx);
 			if (ctx.hasUI)
 				ctx.ui.notify(
-					`language-tail: ${enabled ? (forced ? `forced → ${forced}` : "auto") : "OFF"} | working ${workingName()} | model ${modelSpec()} | appends ${appends.length ? appends.join(",") : "-"}`,
+					`pi-translator: ${enabled ? (forced ? `forced → ${forced}` : "auto") : "OFF"} | working ${workingName()} | model ${modelOverride() ?? `agent (${translator ? translator.label : "n/a"})`} | appends ${appends.length ? appends.join(",") : "-"}`,
 					"info",
 				);
-			dbg(`command /langtail ${raw || "(status)"} → ${enabled ? (forced ? `forced ${forced}` : "auto") : "off"}`);
+			dbg(`command /translator ${raw || "(status)"} → ${enabled ? (forced ? `forced ${forced}` : "auto") : "off"}`);
 		},
 	});
 
@@ -264,25 +277,24 @@ export default function (pi: ExtensionAPI) {
 		// Empty bubbles are an upstream generation bug, not ours to mask.
 		if (!draft || !lastUserPrompt) return;
 
-		const [provider, ...rest] = modelSpec().split("/");
-		const model = ctx.modelRegistry.find(provider, rest.join("/"));
-		if (!model) {
-			notify(ctx, `translator model ${modelSpec()} not found — keeping working language`);
+		const translator = resolveTranslator(ctx);
+		if (!translator) {
+			notify(ctx, modelOverride() ? `translator model ${modelOverride()} not found — keeping working language` : "no current model available — keeping working language");
 			return;
 		}
 
 		const systemPrompt = buildSystemPrompt(workingName(), renderAppend(settings?.promptAppend), forced);
-		let attempt = await translateOnce(ctx, model, systemPrompt, lastUserPrompt, draft, forced);
-		if (attempt.kind === "fail") attempt = await translateOnce(ctx, model, systemPrompt, lastUserPrompt, draft, forced);
+		let attempt = await translateOnce(ctx, translator.model, systemPrompt, lastUserPrompt, draft, forced);
+		if (attempt.kind === "fail") attempt = await translateOnce(ctx, translator.model, systemPrompt, lastUserPrompt, draft, forced);
 		if (attempt.kind === "fail") {
-			notify(ctx, "translation failed or violated validation — delivering original answer");
+			notify(ctx, `translation failed or violated validation (${translator.label}) — delivering original answer`);
 			return;
 		}
 		if (attempt.kind === "none") {
 			dbg("same language → passthrough");
 			return;
 		}
-		dbg(`translated (${forced ?? "auto-detected"}, ${draft.length} → ${attempt.text.length} chars)`);
+		dbg(`translated (${forced ?? "auto-detected"} via ${translator.label}, ${draft.length} → ${attempt.text.length} chars)`);
 		const nonText = msg.content.filter((b: any) => b.type !== "text");
 		return { message: { ...msg, content: [...nonText, { type: "text", text: attempt.text }] } };
 	});

@@ -1,7 +1,7 @@
 # pi-translator — Language Tail for pi
 
 **Status: mechanism VERIFIED end-to-end AND implemented — generic
-`language-tail.ts` per `03-design-language-tail.md`, all §6 drills passed
+`pi-translator.ts` per `03-design-language-tail.md`, all §6 drills passed
 (2026-10-10).**
 Concept: the agent always **works in the machine's language** (English by
 default — its strongest token region). When the user writes in another
@@ -40,33 +40,34 @@ in a fresh context. That removes the entire failure regime.
 | `01-findings.md` | All measured evidence: session analysis, model facts, dose-response, probes, root causes, known upstream issues, empty-bubble bug |
 | `02-architecture.md` | Chosen mechanism + exact pi extension API ground truth (verified signatures, v1 test log) |
 | `03-design-language-tail.md` | **The implementation spec**: single context-free translator call doing detection + translation, generic validation, config, test plan, open questions |
+| `05-plan-v2.md` | **v2 plan**: 100%-English model context (context-restore), prompt translation, placeholder protection, adopted UX from prior art, rejected options, naming situation |
 
 ## Quickstart (verified commands, 2026-10-10)
 
-The implementation lives at the repo root: `language-tail.ts` (+ unit test
-`language-tail.test.ts`).
+The implementation lives at the repo root: `pi-translator.ts` (+ unit test
+`pi-translator.test.ts`). The user-facing README is one level up.
 
 ```bash
 cd /data/user/pi-translator
 
 # unit tests (no LLM, no pi runtime): spec §6.1 + §6.7
-node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON language-tail.test.ts
+node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON pi-translator.test.ts
 
 # load smoke
-pi --extension ./language-tail.ts --model the local dense model \
+pi --extension ./pi-translator.ts --model the local dense model \
    --print "Reply with exactly: extension-load-ok"
 
 # full round-trip: German question → English working draft → German delivery
-LANG_TAIL=1 pi --extension ./language-tail.ts --model the local dense model \
+PI_TRANSLATOR=1 pi --extension ./pi-translator.ts --model the local dense model \
    --print "Was ist ein Port-Konflikt? Antworte in genau zwei Sätzen."
 ```
 
-Add `LANG_TAIL_DEBUG=1` to any run to see the tail's decisions on stderr
+Add `PI_TRANSLATOR_DEBUG=1` to any run to see the tail's decisions on stderr
 (`translated` / `passthrough` / `fallback`). Config precedence is
-env > settings > defaults; the `language-tail` settings block lives in
+env > settings > defaults; the `pi-translator` settings block lives in
 `{cwd}/.pi/settings.json` (a working `du`-rule example is committed there)
 or `~/.pi/agent/settings.json`. A configured block enables the tail even
-without `LANG_TAIL=1`.
+without `PI_TRANSLATOR=1`.
 
 ## Archived v1 (German-specific)
 

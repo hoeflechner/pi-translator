@@ -1,9 +1,9 @@
 /**
- * language-tail.test.ts — spec §6.1 + §6.7. Pure helpers only, no LLM, no pi
- * runtime. Run: node --experimental-strip-types language-tail.test.ts
+ * pi-translator.test.ts — spec §6.1 + §6.7. Pure helpers only, no LLM, no pi
+ * runtime. Run: node --experimental-strip-types pi-translator.test.ts
  */
 import assert from "node:assert/strict";
-import { proseOnly, scriptsOf, scriptGuardOk, lengthOk, renderAppend, buildSystemPrompt } from "./language-tail.ts";
+import { proseOnly, scriptsOf, scriptGuardOk, lengthOk, renderAppend, buildSystemPrompt } from "./pi-translator.ts";
 
 let n = 0;
 const t = (name: string, fn: () => void) => {
@@ -110,4 +110,4 @@ t("append is appended to the shipped prompt", () => {
 	assert.ok(s.trimEnd().endsWith("[de] Use du."));
 });
 
-console.log(`language-tail.test.ts: ${n} tests passed`);
+console.log(`pi-translator.test.ts: ${n} tests passed`);

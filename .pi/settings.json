@@ -1,5 +1,5 @@
 {
-  "language-tail": {
+  "pi-translator": {
     "model": "the local dense model",
     "target": "auto",
     "promptAppend": {

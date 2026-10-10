@@ -1,0 +1,9 @@
+{
+  "name": "pi-translator-local",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Language tail: agent works in the machine's strongest language, the user's language is handled by context-free LLM translation in both directions; model context stays 100% working language.",
+  "pi": {
+    "extensions": ["./pi-translator.ts"]
+  }
+}

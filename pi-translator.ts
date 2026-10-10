@@ -220,6 +220,25 @@ function replaceText(content: any[], text: string): any[] {
 
 type Attempt = { kind: "none" } | { kind: "text"; text: string } | { kind: "fail" };
 
+// Translator call. reasoning "minimal": translation needs no thinking, and the
+// measured empty-completion class (01-findings §5) is a thinking-budget
+// overflow — cap it at the lowest level here. Some models reject that thinking
+// level outright (field report: provider-a/the local MoE model answers stopReason
+// "error" with empty content) — one probe per model, then call without it.
+const reasoningUnsupported = new Set<string>();
+
+async function callTranslator(ctx: any, model: any, systemPrompt: string, payload: string): Promise<any> {
+	const key = `${model.provider}/${model.id}`;
+	const request = { systemPrompt, messages: [{ role: "user", timestamp: Date.now(), content: payload }] };
+	const opts: any = { signal: ctx.signal };
+	if (!reasoningUnsupported.has(key)) opts.reasoning = "minimal";
+	const out = await ctx.modelRegistry.streamSimple(model, request, opts).result();
+	const text = (out.content as any[]).filter((b) => b.type === "text").map((b) => b.text).join("").trim();
+	if (text || reasoningUnsupported.has(key)) return out;
+	reasoningUnsupported.add(key);
+	return ctx.modelRegistry.streamSimple(model, request, { signal: ctx.signal }).result();
+}
+
 async function translateOnce(
 	ctx: any,
 	model: any,
@@ -228,18 +247,7 @@ async function translateOnce(
 	guards: { question: string; draft: string; spans: string[]; rejectNone: boolean; extraAllowed?: string; skipDiffers?: boolean },
 ): Promise<Attempt> {
 	try {
-		const stream = ctx.modelRegistry.streamSimple(
-			model,
-			{
-				systemPrompt,
-				messages: [{ role: "user", timestamp: Date.now(), content: payload }],
-			},
-			// reasoning "minimal": translation needs no thinking, and the
-			// measured empty-completion class (01-findings §5) is a
-			// thinking-budget overflow — cap it at the lowest level here.
-			{ signal: ctx.signal, reasoning: "minimal" },
-		);
-		const out = await stream.result();
+		const out = await callTranslator(ctx, model, systemPrompt, payload);
 		if (out.stopReason === "error") return { kind: "fail" };
 		const raw = (out.content as any[])
 			.filter((b) => b.type === "text")

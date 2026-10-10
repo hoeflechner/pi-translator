@@ -128,11 +128,20 @@ word-overlap guard.
   user's language, the answer passes through and user style rules are not
   re-applied. Prompt translation makes this disobedience rare (the model now
   reads English input); forced-target mode always re-normalizes.
-* **Do not run the tail on a translator-corrupted agent model without
-  pinning `model`.** Field report 2026-10-10: with the agent model as
-  translator default on the corrupting Model MoE, the translator produced the
-  model's own corruption class (refused by the guards, visible fallback to
-  the original — correct behavior, degraded UX). Pin a clean model.
+* **Thinking-level probe:** translator calls request reasoning `"minimal"`,
+  but models differ in support (field report: the provider-a/the local MoE model
+  endpoint answered `stopReason: "error"` with empty content for that level
+  while accepting it never). One failed probe per model flips all later calls
+  to the provider default. Without this, a session on such a model had a
+  dead tail: prompt translation failed, the worker drafted in the user
+  language itself, and reply translation failed too — visible fallback every
+  turn.
+* **Translator = agent model on a translator-corrupted worker** is a quality
+  choice, not a correctness one (it works after the probe fix; short fresh
+  translation contexts measured as the low-dose regime). The guards only
+  catch loud failures (CJK leakage, echoes, truncation) — silent compounds
+  can still slip through. Pin `model` to a clean model if that matters for
+  the workload.
 * Whether pi's compaction path passes through `context` is untested — watch
   item for very long sessions
   ([`docs/05` §deviations](docs/05-plan-v2.md)).

@@ -10,11 +10,13 @@ agent loop (working language = English)    (never target language yourself)"
    │  tool calls, drafts, intermediate narration: all working language
    ▼
 message_end (final assistant message)
-   │  IF target = detect(user prompt) ≠ working:
-   │     translateOnce( model, fresh Context{ generic prompt template
-   │        ("Translate the DRAFT into <LanguageName>" + user append),
-   │        [ "QUESTION: <user prompt>\n\nDRAFT: <draft>" ] } )
-   │     validate (non-empty, stopReason≠error, script-guard)  ── fail → retry once → FALLBACK to working-language draft + notify
+   │  translateOnce( model, fresh Context{ generic prompt template
+   │     ("identify QUESTION language; if same as DRAFT output exactly
+   │      NONE, else translate DRAFT into the QUESTION's language"
+   │      + user promptAppend),
+   │     [ "QUESTION: <user prompt>\n\nDRAFT: <draft>" ] } )
+   │     out === "NONE" → deliver draft untouched
+   │     validate (non-empty, stopReason≠error, generic script-guard)  ── fail → retry once → FALLBACK to working-language draft + notify
    └─▶ return { message: {...msg, content:[...nonTextBlocks, text:translation]} }
 ```
 
@@ -103,12 +105,15 @@ The v1 file (removed from the tree 2026-10-10; recover via
    function-word heuristic initially MISS-detected
    „Was ist ein Port-Konflikt? Antworte in genau zwei Sätzen." (guard order:
    minimum-hit threshold placed before the umlaut check). Fixed by
-   `hits >= 2 || (hits >= 1 && /[äöüß]/)`. → **Detectors need a fixed test
-   corpus as unit tests** (03 spec §5); do not trust prose confidence here.
+   `hits >= 2 || (hits >= 1 && /[äöüß]/)`. → Heuristic text detectors are
+   brittle (any corpus will miss real phrasing). This is a direct reason
+   the generic design (03 §1–2) dropped deterministic detection entirely
+   and let the translator LLM identify the target language.
 
 ## What v1 intentionally does NOT do (all live in the 03 spec)
 
-- German hardcoded (detector, prompt, trigger) → becomes language profiles.
+- German hardcoded (detector, prompt, trigger) → replaced by a single
+  generic translator call that detects the language itself (03).
 - Language detection only from the prompting message (queued mid-turn
   messages don't re-trigger).
 - Translates code fences by asking politely (prompt instruction) instead of

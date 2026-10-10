@@ -6,15 +6,18 @@ Concept: the agent always **works in the machine's language** (English by
 default — its strongest token region). When the user writes in another
 language, the final answer is rewritten by a **separate, context-free
 translation call on the delivery path**, using a **language-neutral
-prompt**: the translator is simply told which language to produce. The
+prompt**: the translator itself identifies the language of the user
+question and translates the answer into it (same language → a `NONE`
+marker → passthrough). No detector, no language tables — nothing in the
+extension knows which language the user speaks. The
 model itself never generates the target language, so long-context
 language corruption can never surface.
 
 **This is not a German patch. German was just the symptom that proved the
 mechanism. The design target is: any target language, zero language-
-specific code or prompts.** Style rules a human wants (e.g. the German
-informal „du“) are user-supplied text appended to the generic translator
-prompt (`promptAppend`) — never shipped built-in per language.
+specific code, tables or prompts.** Style rules a human wants (e.g. the
+German informal „du“) are user-supplied text appended to the generic
+translator prompt (`promptAppend`) — never shipped built-in per language.
 
 ## Why this exists (short version — full evidence in 01-findings.md)
 
@@ -35,7 +38,7 @@ in a fresh context. That removes the entire failure regime.
 |---|---|
 | `01-findings.md` | All measured evidence: session analysis, model facts, dose-response, probes, root causes, known upstream issues, empty-bubble bug |
 | `02-architecture.md` | Chosen mechanism + exact pi extension API ground truth (verified signatures, v1 test log) |
-| `03-design-language-tail.md` | **The implementation spec**: language-agnostic translator prompt, per-language detector/validation tables, config, test plan, open questions |
+| `03-design-language-tail.md` | **The implementation spec**: single context-free translator call doing detection + translation, generic validation, config, test plan, open questions |
 
 ## Archived v1 (German-specific)
 

@@ -1,5 +1,8 @@
 # 05 — v2 plan: 100%-English context, prompt translation, adopted UX
 
+**STATUS 2026-10-10: F1–F5 implemented and drilled; F6 parked. Deviations
+and live findings at the bottom.**
+
 Operator policy decisions (2026-10-10):
 - **No external machine translation.** Google/mymemory/libretranslate backends
   are a no-go (privacy + unofficial endpoint). The translator is always a
@@ -123,3 +126,32 @@ clear of pi-translate (`/translate*`).
    original; debug dump shows English for the model; multi-paragraph
    technical question keeps every path/version.
 5. F4 command, F5 log, F6 bilingual: config + smoke.
+
+## Deviations & live findings (implementation day, 2026-10-10)
+
+- **F2 hook**: prompt translation runs at `message_end` of the *user* message,
+  not the `input` event — verified ordering (user message_end precedes the
+  first `context`), works identically in every mode including `--print`, and
+  needs no `InputEventResult` transform (which would rewrite the transcript).
+- **Gate passed**: unknown fields on replaced messages persist to the session
+  JSONL and survive `--session` resume (probe `/tmp/pt-gate.ts`). F1/F2 build
+  on `piTranslator` message metadata + copy-on-write `context` restore.
+- **Reply gate**: the prompt-translation verdict doubles as the reply
+  translator gate — an English question costs exactly ONE tiny call
+  (`NONE`) and zero reply calls; non-English questions pay two.
+- **F3 paid off immediately**: placeholder masking (⟦n⟧) protects code/paths
+  deterministically; completeness of placeholders is asserted on restore
+  (dropped/duplicated ⟦n⟧ → retry → fallback).
+- **Latin↔Latin incident (live)**: the translator once answered a German turn
+  with English meta-commentary about translating (chain-of-thought bled into
+  content). The script guard is blind to it (Latin on both sides). Fixed with
+  the `differsFromSource` word-overlap guard: an untranslated/echoed output
+  shares ≥60% of its word forms with the source and is refused → retry →
+  fallback. Skipping the check for short sources (not enough signal); the
+  prompt-direction echo (English→English) is legitimate → not checked there.
+- **Unknown ≠ English**: if the translator model is unavailable, the reply
+  gate must treat the question language as UNKNOWN (attempt + visible
+  failure), never silently assume the working language.
+- Compaction: `context` restores the English originals for normal LLM calls;
+  whether pi's compaction path passes through `context` is untested — the
+  §7 watch item stays until observed at real length.

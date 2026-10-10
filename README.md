@@ -1,7 +1,9 @@
 # pi-translator
 
 A [pi](https://pi.dev) coding-agent extension that keeps your agent **working
-in the machine's strongest language** and **delivers every answer in yours**.
+and thinking in the machine's strongest language** while the model's context
+stays **100% that language** — and you see **your own language everywhere**.
+Type German, get German; the model never reads or writes a word of it.
 
 ## The problem: long-context language corruption
 
@@ -23,39 +25,48 @@ lives in *target-language generation at long context* — asking the model to
 
 Full evidence: [`docs/01-findings.md`](docs/01-findings.md).
 
-## The solution: translate on the delivery path, never generate the target language
+## The solution: the model lives in English, the transcript lives in yours
 
 The agent is told (via a prompt guideline) to **always think, narrate, and
 draft in the working language** — English by default, the model's strongest
 token region. It never generates the target language, so the entire corruption
-regime becomes architecturally unreachable.
-
-Delivery happens in one **context-free translation call** at `message_end`:
+regime becomes architecturally unreachable. Two **context-free LLM
+translation calls** wrap each turn, and a `context` handler keeps the model's
+input monolingual:
 
 ```
-QUESTION (original user prompt) + DRAFT (working-language answer)
-        │  fresh call, nothing of the session context leaks in
-        ▼
-translator LLM identifies the question's language itself
-  ├─ same language as DRAFT  → replies "NONE" → draft passed through untouched
-  └─ otherwise               → translates the DRAFT into the question's language
-        ▼
-validated (stopReason, non-empty, Unicode-script guard, length sanity)
-  ├─ pass  → final message in the transcript is replaced by the translation
-  └─ fail  → retry once, then deliver the original draft + warning — never an empty bubble
+your question (German) ──▶ [call 1: request→English] ──▶ model reads English
+                                        │ your original stays in the transcript
+model draft (English) ──▶ [call 2: answer→German] ──▶ transcript + UI show German
+                                        │ the English draft rides along as metadata
+before EVERY later LLM call:
+   `context` handler swaps all originals back → the model reads pure English
 ```
+
+Each call is made by a translator LLM that **identifies the language itself**:
+question already in the right language → it replies exactly `NONE` →
+passthrough, no rewrite (an English chat therefore costs one tiny call and
+zero rewrites).
 
 Design properties:
 
 * **Zero language-specific code.** No detector, no word lists, no language
-  tables, no per-language prompts. The translator is shown the question and
-  simply told to translate the answer into its language. Adding a language
-  means nothing; the user's keyboard decides.
+  tables, no per-language prompts. The translator is shown the text and
+  simply told to translate it. Adding a language means nothing; your keyboard
+  decides.
+* **Nothing external.** Every translation is a local LLM call — no cloud
+  machine-translation endpoints, ever.
+* **Deterministic safety.** Code fences, inline code, paths and URLs are
+  masked with `⟦n⟧` placeholders before translation and verified on restore;
+  every output passes a Unicode-script guard (catches the CJK-leak class
+  table-free), a length sanity check, and a word-overlap guard that refuses
+  untranslated echoes even between same-script languages. Failure → retry
+  once → deliver the original + warning. Never a silent empty bubble.
 * **Style is user config, not code.** Rules like "German answers must use
-  informal *du*" are `promptAppend` entries — per-language labeled lines
-  appended to the generic translator prompt; the translator applies the ones
-  matching its target.
-* **Nothing is harvested or persisted** beyond the normal session transcript.
+  informal *du*" are `promptAppend` entries — per-language labeled lines the
+  translator applies itself.
+* **Nothing is harvested or persisted** beyond the normal session transcript
+  (plus your own optional debug log).
 
 ## Usage
 
@@ -68,9 +79,11 @@ PI_TRANSLATOR=1 pi --extension ./pi-translator.ts
 ```
 
 Per session: `/translator` (status) · `/translator on|off|auto` ·
-`/translator <language name>` (force a delivery language).
-Add `PI_TRANSLATOR_DEBUG=1` to see decisions on stderr
-(`translated` / `passthrough` / `fallback`).
+`/translator <language name>` (force a delivery language) ·
+`/translator-original` (show the working-language original of the last
+answer). Add `PI_TRANSLATOR_DEBUG=1` to see decisions on stderr
+(`translated` / `passthrough` / `fallback`) and `PI_TRANSLATOR_LOG=<file>`
+for a JSONL record of every translation call.
 
 ### Configuration (env > settings > defaults)
 
@@ -95,31 +108,36 @@ Settings live in `<cwd>/.pi/settings.json` or `~/.pi/agent/settings.json`:
 
 ## Verified behavior
 
-13 unit tests (prompt construction, script guard, length guard, append
-rendering — no LLM involved: `node --experimental-strip-types
-pi-translator.test.ts`) plus live end-to-end drills: German round-trip,
-English passthrough via the exact `NONE` marker, forced target (French output
-from a German question), fallback on a bogus translator model (original
-delivered, no crash, no empty bubble), and append label discipline (the `[de]`
-rule never leaks into French).
+18 unit tests (prompt construction, script guard, length guard,
+placeholder mask/restore, echo detection — no LLM involved:
+`node --experimental-strip-types pi-translator.test.ts`) plus live
+echo-drills: German round-trips with the model demonstrably reading English
+(`context` restores logged across session resumes), English passthrough via
+the exact `NONE` marker, forced target, fallback on a broken translator
+model, append label discipline — and one live-caught incident (translator
+answered with meta-commentary instead of translating) closed by the
+word-overlap guard.
 
 ## Known limits
 
-* Streaming shows the working-language draft, then the replacement (v1-era
-  behavior, accepted).
-* Every turn pays one extra model call — same-language turns too (the
-  extension cannot know otherwise); the call answers `NONE` and is cheap.
-* If the working model *disobeys* the guideline and drafts directly in the
-  user's language, the turn passes through untranslated — and user style rules
-  are then not re-applied. Forced mode always re-normalizes.
-* Watch compaction in very long non-English sessions
-  ([`docs/03` §7](docs/03-design-language-tail.md)).
+* Streaming shows the working-language draft, then the replacement.
+* Every turn pays one cheap translation call (the request `NONE`-check);
+  non-English turns pay two (request + answer). An English chat is one tiny
+  call and no rewrites.
+* If the working model disobeys the guideline and drafts directly in the
+  user's language, the answer passes through and user style rules are not
+  re-applied. Prompt translation makes this disobedience rare (the model now
+  reads English input); forced-target mode always re-normalizes.
+* Whether pi's compaction path passes through `context` is untested — watch
+  item for very long sessions
+  ([`docs/05` §deviations](docs/05-plan-v2.md)).
 
 ## Repository
 
 * [`docs/01-findings.md`](docs/01-findings.md) — the measured evidence
 * [`docs/02-architecture.md`](docs/02-architecture.md) — mechanism + pi extension API ground truth
-* [`docs/03-design-language-tail.md`](docs/03-design-language-tail.md) — the implementation spec this code implements 1:1
+* [`docs/03-design-language-tail.md`](docs/03-design-language-tail.md) — the v1 implementation spec
+* [`docs/05-plan-v2.md`](docs/05-plan-v2.md) — **v2: bidirectional translation + 100%-English context (implemented)**, prior-art rationale, live findings
 * `pi-translator.ts` + `pi-translator.test.ts` — the extension
 
 *Not published to npm yet. A German-specific predecessor ("german-tail")

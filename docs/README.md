@@ -1,8 +1,8 @@
 # pi-translator — Language Tail for pi
 
-**Status: mechanism VERIFIED end-to-end AND implemented — generic
-`pi-translator.ts` per `03-design-language-tail.md`, all §6 drills passed
-(2026-10-10).**
+**Status: v2 IMPLEMENTED AND DRILLED (2026-10-10) — bidirectional context-
+free translation, model context 100% working language, all drills passed.
+v1 spec: `03-design-language-tail.md`; v2: `05-plan-v2.md`.**
 Concept: the agent always **works in the machine's language** (English by
 default — its strongest token region). When the user writes in another
 language, the final answer is rewritten by a **separate, context-free

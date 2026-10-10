@@ -185,6 +185,8 @@ interface TailSettings {
 	target?: string;
 	model?: string;
 	promptAppend?: Record<string, string>;
+	debug?: boolean;
+	log?: string;
 }
 
 function loadSettings(cwd: string): TailSettings | null {
@@ -281,14 +283,14 @@ export default function (pi: ExtensionAPI) {
 	let lastOriginal = "";
 
 	const dbg = (msg: string) => {
-		if (process.env.PI_TRANSLATOR_DEBUG === "1") console.error(`[pi-translator] ${msg}`);
+		if (process.env.PI_TRANSLATOR_DEBUG === "1" || settings?.debug) console.error(`[pi-translator] ${msg}`);
 	};
 	const notify = (ctx: any, msg: string) => {
 		if (ctx.hasUI) ctx.ui.notify(`pi-translator: ${msg}`, "warning");
 		dbg(msg);
 	};
 	const logLine = (rec: Record<string, unknown>) => {
-		const file = process.env.PI_TRANSLATOR_LOG;
+		const file = process.env.PI_TRANSLATOR_LOG ?? settings?.log;
 		if (!file) return;
 		try {
 			appendFileSync(file, JSON.stringify({ ts: new Date().toISOString(), ...rec }) + "\n");

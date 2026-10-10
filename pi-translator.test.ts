@@ -3,7 +3,7 @@
  * runtime. Run: node --experimental-strip-types pi-translator.test.ts
  */
 import assert from "node:assert/strict";
-import { proseOnly, scriptsOf, scriptGuardOk, lengthOk, renderAppend, buildSystemPrompt, buildPromptTranslatePrompt, maskProtected, unmaskProtected, differsFromSource } from "./pi-translator.ts";
+import { proseOnly, scriptsOf, scriptGuardOk, lengthOk, renderAppend, buildSystemPrompt, buildPromptTranslatePrompt, workingGuideline, maskProtected, unmaskProtected, differsFromSource } from "./pi-translator.ts";
 
 let n = 0;
 const t = (name: string, fn: () => void) => {
@@ -113,6 +113,15 @@ t("forced template swaps detection for a fixed target, drops NONE", () => {
 t("append is appended to the shipped prompt", () => {
 	const s = buildSystemPrompt("English", renderAppend({ de: "Use du." }), null);
 	assert.ok(s.trimEnd().endsWith("[de] Use du."));
+});
+
+/* worker-side system-prompt guideline (thinking + drafting language) */
+t("workingGuideline forces working language for reasoning AND drafts", () => {
+	const s = workingGuideline("English");
+	assert.ok(/reasoning|thinking/i.test(s), "must cover internal reasoning");
+	assert.ok(s.includes("in English only"), "must name the working language");
+	assert.ok(/even when project instructions|injected memories/i.test(s), "must override AGENTS.md/memory pull");
+	assert.ok(!/\bdu\b/.test(s) && !s.includes("„du"), "language-agnostic: no per-language text shipped");
 });
 
 /* F3 mask/restore (§05 placeholder protection) */

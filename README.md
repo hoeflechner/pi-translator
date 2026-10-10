@@ -27,12 +27,15 @@ Full evidence: [`docs/01-findings.md`](docs/01-findings.md).
 
 ## The solution: the model lives in English, the transcript lives in yours
 
-The agent is told (via a prompt guideline) to **always think, narrate, and
-draft in the working language** — English by default, the model's strongest
-token region. It never generates the target language, so the entire corruption
-regime becomes architecturally unreachable. Two **context-free LLM
-translation calls** wrap each turn, and a `context` handler keeps the model's
-input monolingual:
+The agent is told — as a structured system-prompt section (`pi_translator`,
+added via `before_agent_start` so pi diffs it as a prompt-cache delta) — to
+**always think, narrate, and draft in the working language** — English by
+default, the model's strongest token region. The guideline explicitly
+outranks AGENTS.md, injected memories and conversation language that pull
+the model toward drafting in the user's language. It never generates the
+target language, so the entire corruption regime becomes architecturally
+unreachable. Two **context-free LLM translation calls** wrap each turn, and a
+`context` handler keeps the model's input monolingual:
 
 ```
 your question (German) ──▶ [call 1: request→English] ──▶ model reads English

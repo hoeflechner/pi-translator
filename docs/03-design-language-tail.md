@@ -165,6 +165,16 @@ Never deliver an empty bubble, never loop. `NONE` short-circuits steps
   observed.
 - Streaming UX: user sees working-language draft stream, then replacement
   (v1 behavior, acceptable).
+- **Passthrough skips style** (found live 2026-10-10): when the working
+  model disobeys the working-language guideline and drafts *directly* in
+  the user's language, the translator sees QUESTION≈DRAFT → `NONE` → the
+  original is delivered untouched, so `promptAppend` (e.g. the du rule) is
+  NOT re-applied. The tail assumes guideline obedience; weak models (the
+  whole reason this exists) obey it, a fluent local model like
+  `the local dense model` sometimes drafts German itself. Forced-target mode has no
+  passthrough, so it always re-normalizes style. Mitigation candidate: a
+  same-language *style-normalize* pass instead of passthrough — parked until
+  it bites in production (it would add a call to every same-language turn).
 - Mixed-language questions → translator picks (LLM judgment; the old
   detector score is gone). Queued mid-turn messages keep the turn's input.
 - Multi-user auto-load (operator sign-off; sessiond boots extensions for

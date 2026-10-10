@@ -27,7 +27,7 @@ t("prose strips fenced + inline code", () => {
 /* scriptsOf (§4.2 evidence sets) */
 t("scriptsOf detects distinct scripts", () => {
 	assert.ok(scriptsOf("Hallo").has("Latin"));
-	assert.ok(scriptsOf("contra设计").has("Han"));
+	assert.ok(scriptsOf("contra端口").has("Han"));
 	assert.ok(scriptsOf("привет").has("Cyrillic"));
 	assert.ok(scriptsOf("こんにちは").has("Hiragana"));
 });
@@ -36,7 +36,7 @@ t("scriptsOf detects distinct scripts", () => {
 t("script-guard rejects CJK leak into German answer", () => {
 	const q = "Was ist ein Port-Konflikt?";
 	const draft = "A port conflict is when two apps want the same port.";
-	const leaked = "Ein Port-Konflikt contra设计 wenn zwei Apps denselben Port wollen.";
+	const leaked = "Ein Port-Konflikt contra端口 wenn zwei Apps denselben Port wollen.";
 	assert.equal(scriptGuardOk(leaked, q, draft), false);
 });
 
@@ -126,12 +126,12 @@ t("workingGuideline forces working language for reasoning AND drafts", () => {
 
 /* F3 mask/restore (§05 placeholder protection) */
 t("mask/unmask round-trips protected spans verbatim", () => {
-	const src = "Öffne ```bash\nss -tlnp | grep 80\n``` und `netstat`, siehe https://example.com/a?x=1 und /data/user/file.ts";
+	const src = "Öffne ```bash\nss -tlnp | grep 80\n``` und `netstat`, siehe https://example.com/a?x=1 und /home/demo/file.ts";
 	const { masked, spans } = maskProtected(src);
 	assert.ok(!masked.includes("ss -tlnp"), "fence body hidden");
 	assert.ok(!masked.includes("netstat"), "inline code hidden");
 	assert.ok(!masked.includes("example.com"), "URL hidden");
-	assert.ok(!masked.includes("/data/user"), "path hidden");
+	assert.ok(!masked.includes("/home/demo"), "path hidden");
 	assert.ok(masked.includes("Öffne"), "prose stays");
 	const back = unmaskProtected(masked, spans);
 	assert.ok(back.ok, "identity restore is complete");

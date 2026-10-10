@@ -8,8 +8,9 @@
  *   before every LLM call, `context` restores the English originals
  *   (embedded as message metadata) → the model never reads target language.
  *
- * Why: local the local MoE model corrupts German GENERATION in long contexts
- * (measured 10%→24% artifacts by context quartile) and is clean in English.
+ * Why: the locally served ultra-sparse MoE model corrupts German GENERATION
+ * in long contexts (measured 10%→24% artifacts by context quartile) and is
+clean in English.
  * Spec docs/03 + upgrade plan docs/05 (F1 context-restore, F2 prompt
  * translation, F3 placeholder protection, F4 original, F5 debug log).
  * No external MT. No detector: the translator LLM identifies languages
@@ -241,7 +242,7 @@ type Attempt = { kind: "none" } | { kind: "text"; text: string } | { kind: "fail
 // Translator call. reasoning "minimal": translation needs no thinking, and the
 // measured empty-completion class (01-findings §5) is a thinking-budget
 // overflow — cap it at the lowest level here. Some models reject that thinking
-// level outright (field report: provider-a/the local MoE model answers stopReason
+// level outright (field report: one locally served MoE endpoint answers
 // "error" with empty content) — one probe per model, then call without it.
 const reasoningUnsupported = new Set<string>();
 
@@ -335,7 +336,7 @@ export default function (pi: ExtensionAPI) {
 	const modelOverride = () => process.env.PI_TRANSLATOR_MODEL || settings?.model || null;
 
 	// Translator defaults to the agent's own model; an env/settings override
-	// pins a different one (e.g. the clean 27B behind a weak worker).
+	// pins a different one (e.g. a clean, larger model behind a weak worker).
 	function resolveTranslator(ctx: any): { model: any; label: string } | null {
 		const spec = modelOverride();
 		if (spec) {

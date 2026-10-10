@@ -19,14 +19,15 @@ translator prompt (`promptAppend`) — never shipped built-in per language.
 
 ## Why this exists (short version — full evidence in 01-findings.md)
 
-`the local MoE model` (~180B MoE, 6B active/token, served locally via
-the serving router→vLLM) progressively corrupts **German generation** in long chats:
-Chinese morphemes fused into German words (`contra⟨CJK⟩`, `zwei⟨CJK⟩liche`),
-invented compounds and verbs (⟨calque⟩, ⟨calque⟩), wrong
-calques (⟨calque⟩ for CPU flag). Measured dose–response over one 30-day
-session transcript: artifact rate **10% at 35–60k context tokens → 24% at
-154–234k**. The same model is **clean in English** (12/12 artifact-magnet
-probes). Its dense sibling (the local dense model) is clean in German (0/64).
+The locally served **ultra-sparse MoE model** of this instance (~180B total,
+~6B active/token, self-hosted serving stack) progressively corrupts **German
+generation** in long chats: Chinese morphemes fused into German words,
+invented compounds and verbs, wrong calques of English technical terms
+(exact samples withheld — transcript-derived personal data). Measured
+dose–response over one 30-day session transcript: artifact rate **10% at
+35–60k context tokens → 24% at 154–234k**. The same model is **clean in
+English** (12/12 artifact-magnet probes). Its dense local sibling (~27B)
+is clean in German (0/64).
 → Keep the fast model in English, translate the output with a clean model
 in a fresh context. That removes the entire failure regime.
 
@@ -45,17 +46,17 @@ The implementation lives at the repo root: `pi-translator.ts` (+ unit test
 `pi-translator.test.ts`). The user-facing README is one level up.
 
 ```bash
-cd /data/user/pi-translator
+cd pi-translator
 
 # unit tests (no LLM, no pi runtime): spec §6.1 + §6.7
 node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON pi-translator.test.ts
 
 # load smoke
-pi --extension ./pi-translator.ts --model the local dense model \
+pi --extension ./pi-translator.ts --model <provider>/<clean-model> \
    --print "Reply with exactly: extension-load-ok"
 
 # full round-trip: German question → English working draft → German delivery
-PI_TRANSLATOR=1 pi --extension ./pi-translator.ts --model the local dense model \
+PI_TRANSLATOR=1 pi --extension ./pi-translator.ts --model <provider>/<clean-model> \
    --print "Was ist ein Port-Konflikt? Antworte in genau zwei Sätzen."
 ```
 

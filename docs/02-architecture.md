@@ -93,9 +93,9 @@ components needed here.
 The v1 file (removed from the tree 2026-10-10; recover via
 `git show <initial-commit>:reference/german-tail-v1.ts`) passed:
 
-1. Load smoke: `pi --extension ... --model the local dense model --print
+1. Load smoke: `pi --extension ... --model <clean-model> --print
    "Reply with exactly: extension-load-ok"` → `extension-load-ok`.
-2. Guideline effect: German question to `the local dense model` with `GERMAN_TAIL=1`
+2. Guideline effect: German question to the clean local model with `GERMAN_TAIL=1`
    → agent produced an **English** draft despite German input (proves the
    working-language guideline beats conversational-language pull).
 3. Round-trip: stdout = fluent German; session transcript contains the

@@ -99,7 +99,7 @@ Never deliver an empty bubble, never loop. `NONE` short-circuits steps
 { "pi-translator": {
     "working": "en",
     "target": "auto",
-    "model": "the local dense model",
+    "model": "<provider>/<model-id>",
     "promptAppend": {
       "*":  "optional general addition",
       "de": "Sprich den Leser in direkter Anrede mit „du" an (informell, nicht „Sie")."
@@ -170,8 +170,8 @@ Never deliver an empty bubble, never loop. `NONE` short-circuits steps
   the user's language, the translator sees QUESTION≈DRAFT → `NONE` → the
   original is delivered untouched, so `promptAppend` (e.g. the du rule) is
   NOT re-applied. The tail assumes guideline obedience; weak models (the
-  whole reason this exists) obey it, a fluent local model like
-  `the local dense model` sometimes drafts German itself. Forced-target mode has no
+  whole reason this exists) obey it, while a fluent strong local model
+  sometimes drafts the target language itself. Forced-target mode has no
   passthrough, so it always re-normalizes style. Mitigation candidate: a
   same-language *style-normalize* pass instead of passthrough — parked until
   it bites in production (it would add a call to every same-language turn).

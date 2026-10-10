@@ -7,19 +7,20 @@ Type German, get German; the model never reads or writes a word of it.
 
 ## The problem: long-context language corruption
 
-A local `the local MoE model` (180B MoE, 6B active) serving this instance
-progressively corrupted its **German** output in long chats — measured over a
-30-day session transcript:
+The locally served **ultra-sparse MoE model** of this instance (~180B total,
+~6B active per token) progressively corrupted its **German** output in long
+chats — measured over a 30-day personal session transcript:
 
-* **CJK morphemes fused into German words** (`contra⟨CJK⟩`, `zwei⟨CJK⟩liche`,
-  `Start⟨CJK⟩t`) — the model's tokenizer space leaking into generation;
-* **invented compounds and verbs** (⟨calque⟩, ⟨calque⟩) and wrong
-  calques (⟨calque⟩ for a CPU flag);
+* **CJK morphemes fused into German words** — the model's tokenizer space
+  leaking into generation (13+ distinct occurrences, exact samples withheld
+  as transcript-derived personal data);
+* **invented compounds and verbs** and wrong calques of English technical
+  terms (roughly a dozen distinct classes);
 * a clean **dose–response**: artifact rate rose from ~10% at 35–60k context
   tokens to ~24% at 154–234k.
 
 The same model was **clean in English** in 12/12 artifact-magnet probes, and
-its dense sibling (the local dense model) was clean in German (0/64). The corruption
+its dense local sibling (~27B, dense) was clean in German (0/64). The corruption
 lives in *target-language generation at long context* — asking the model to
 "answer carefully in German" cannot fix what is a decoding property.
 
@@ -95,7 +96,7 @@ for a JSONL record of every translation call.
 | `PI_TRANSLATOR=1` | any block present | off | enable at boot |
 | `PI_TRANSLATOR_WORKING` | `working` | `en` | language the agent works in |
 | `PI_TRANSLATOR_TARGET` | `target` | `auto` | `auto`, `off`, or a language name to force |
-| `PI_TRANSLATOR_MODEL` | `model` | **the agent's own model** | translator override (e.g. pin a clean 27B behind a weak worker) |
+| `PI_TRANSLATOR_MODEL` | `model` | **the agent's own model** | translator override (e.g. pin a clean, larger model behind a weak worker) |
 
 Settings live in `<cwd>/.pi/settings.json` or `~/.pi/agent/settings.json`:
 
@@ -111,7 +112,7 @@ Settings live in `<cwd>/.pi/settings.json` or `~/.pi/agent/settings.json`:
 
 ## Verified behavior
 
-18 unit tests (prompt construction, script guard, length guard,
+19 unit tests (prompt construction, script guard, length guard,
 placeholder mask/restore, echo detection — no LLM involved:
 `node --experimental-strip-types pi-translator.test.ts`) plus live
 echo-drills: German round-trips with the model demonstrably reading English
@@ -132,8 +133,8 @@ word-overlap guard.
   re-applied. Prompt translation makes this disobedience rare (the model now
   reads English input); forced-target mode always re-normalizes.
 * **Thinking-level probe:** translator calls request reasoning `"minimal"`,
-  but models differ in support (field report: the provider-a/the local MoE model
-  endpoint answered `stopReason: "error"` with empty content for that level
+  but models differ in support (field report: one locally served
+  MoE endpoint answered `stopReason: "error"` with empty content for that level
   while accepting it never). One failed probe per model flips all later calls
   to the provider default. Without this, a session on such a model had a
   dead tail: prompt translation failed, the worker drafted in the user

@@ -1,6 +1,5 @@
 {
   "pi-translator": {
-    "model": "the local dense model",
     "target": "auto",
     "promptAppend": {
       "de": "Rede die lesende Person in durchgehend informellem „du“ an, nie mit „Sie“."

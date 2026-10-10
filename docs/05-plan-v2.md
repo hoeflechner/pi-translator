@@ -54,7 +54,7 @@ the transcript and UI keep the user's original text; the model receives the
 English version (embedded via message metadata + `context` handler, same
 machinery as F1).
 
-- **Why this also helps generation:** observed live on `the local dense model` — German
+- **Why this also helps generation:** observed live — German
   question ⇒ model sometimes drafts German despite the guideline. Handing it
   an English question removes the input-language pull; guideline obedience
   should rise for free.
@@ -105,10 +105,10 @@ verify phrasing inline. Parked until F1–F5 are solid.
 
 ## Naming (verified on npm registry 2026-10-10)
 
-`pi-translator` is **taken on npm** since 2026-06-30 (another author,
-GPL-3.0, an unrelated batch CSV/JSON file-translation CLI) — and since pi.dev
+`pi-translator` is **taken on npm** since 2026-06-30 (an unrelated
+GPL-3.0 batch CSV/JSON file-translation CLI) — and since pi.dev
 packages mirror npm, `pi install npm:pi-translator` would fetch *that*.
-GitHub `the owner/pi-translator` stays fine (different namespaces). Before
+The GitHub repo name `pi-translator` stays fine (different namespace). Before
 any publish: pick a registry name — `pi-language-tail` (internal concept name,
 verified free) is the current favorite; command namespace `/translator*` is
 clear of pi-translate (`/translate*`).

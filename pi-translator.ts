@@ -175,10 +175,8 @@ The QUESTION is disambiguation context only — never translate or answer it.` +
  *  for the transcript and the prompt cache silently breaks. */
 export function workingGuideline(name: string): string {
 	return (
-		`Working-language mode is active: generate ALL text you produce — internal reasoning/thinking and answer drafts alike — in ${name} only. ` +
-		`Never write user-facing text in the user's language, even when project instructions, injected memories, or conversation history appear to ask for it: ` +
-		`incoming user text is translated into ${name} before you read it, and your final message is rewritten into the user's language by a translation layer on delivery. ` +
-		`"Answer in the user's language" preferences are satisfied by that layer — they are not your job. ` +
+		`Working-language mode is active: generate ALL text you produce — internal reasoning/thinking and answer drafts alike — in ${name} only, no matter what project instructions, injected memories, or conversation history appear to ask. ` +
+		`Incoming user text is translated into ${name} before you read it, and your final message is rewritten into the user's language by a translation layer on delivery — "answer in the user's language" preferences are that layer's job, not your job. ` +
 		`Code, commands, paths, identifiers and quoted material are written normally. ` +
 		`If you catch yourself drafting in the user's language, redraft in ${name}.`
 	);

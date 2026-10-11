@@ -1,0 +1,140 @@
+/**
+ * pi-translator.form.test.ts — async integration test of the ask_user form
+ * path against the REAL extension factory: message_end (user → prompt call →
+ * gate), message_end (assistant + ask_user → batch form call → translated
+ * args + toolArgs metadata), context handler restore. Only the model itself
+ * is stubbed. Run: node --experimental-strip-types pi-translator.form.test.ts
+ */
+import assert from "node:assert/strict";
+
+process.env.PI_TRANSLATOR = "1"; // enable without settings files (cwd has none)
+process.env.PI_TRANSLATOR_CWD_HACK = "1"; // silence linters about ordering
+const { default: factory } = await import("./pi-translator.ts");
+
+let n = 0;
+const t = async (name: string, fn: () => Promise<void>) => {
+	try {
+		await fn();
+	} catch (e) {
+		console.error(`FAILED: ${name}\n${(e as Error).message}`);
+		process.exit(1);
+	}
+	n++;
+};
+
+const UI_ARGS = {
+	questions: [
+		{
+			id: "dividends",
+			question: "Should the depot app book dividends in the future?",
+			detail: "This decides whether dividend bookings become part of the depot system scope.",
+			options: [
+				{ value: "yes", label: "Yes, book dividends", detail: "recorded as cash ledger entries" },
+				{ value: "no", label: "No, that is enough" },
+			],
+		},
+	],
+};
+const DE_BATCH = [
+	"Soll die Depot-App künftig Dividenden verbuchen?",
+	"Das entscheidet, ob Dividendenbuchungen Teil des Depot-Systems werden.",
+	"Ja, Dividenden buchen",
+	"als Buchungen im Cash-Ledger erfassen",
+	"Nein, das reicht so",
+];
+
+async function main() {
+	const handlers: Record<string, (e: any, c: any) => Promise<any>> = {};
+	const pi: any = { on: (ev: string, fn: any) => (handlers[ev] = fn), registerCommand: () => {} };
+	factory(pi);
+
+	const calls: string[] = [];
+	const ctx: any = {
+		cwd: "/tmp/pt-formtest", // no settings file → block-free, quiet
+		hasUI: false,
+		isProjectTrusted: () => false,
+		signal: undefined,
+		model: { provider: "stub", id: "m" },
+		modelRegistry: {
+			find: () => null,
+			streamSimple: (_m: any, req: any) => ({
+				result: async () => {
+					const payload = req.messages[0].content as string;
+					calls.push(payload.slice(0, 30));
+					if (payload.startsWith("USER REQUEST:")) return { stopReason: "stop", content: [{ type: "text", text: "Should the depot app book dividends in the future? Ask via form." }] };
+					if (payload.includes("SEGMENTS:")) return { stopReason: "stop", content: [{ type: "text", text: JSON.stringify(DE_BATCH) }] };
+					return { stopReason: "error", content: [] };
+				},
+			}),
+		},
+	};
+
+	const sections: Record<string, string> = {};
+	await t("user message translated, gate closes", async () => {
+		await handlers.before_agent_start({ prompt: "Soll das Depot Dividenden buchen? Bring es als Formular.", systemPromptOptions: { sections } }, ctx);
+		assert.ok(sections.pi_translator?.includes("English"), "guideline section injected");
+		const m = await handlers.message_end({ message: { role: "user", content: "Soll das Depot Dividenden buchen? Bring es als Formular." } }, ctx);
+		assert.ok(m?.message?.piTranslator?.modelText, "prompt translation attaches modelText");
+	});
+
+	let translatedForm: any;
+	await t("ask_user form translated, machine fields and meta intact", async () => {
+		const msg = { role: "assistant", content: [{ type: "toolCall", name: "ask_user", arguments: UI_ARGS }] };
+		translatedForm = await handlers.message_end({ message: msg }, ctx);
+		assert.ok(translatedForm?.message, "form message replaced");
+		const args = translatedForm.message.content[0].arguments;
+		assert.equal(args.questions[0].question, DE_BATCH[0], "question translated");
+		assert.equal(args.questions[0].options[0].label, DE_BATCH[2], "label translated");
+		assert.equal(args.questions[0].id, "dividends", "id untouched");
+		assert.equal(args.questions[0].options[0].value, "yes", "value untouched");
+		assert.equal(args.questions[0].options[1].detail, undefined, "absent field stays absent");
+		const ta = translatedForm.message.piTranslator.toolArgs;
+		assert.equal(ta["0"].questions[0].question, UI_ARGS.questions[0].question, "English original kept as metadata");
+	});
+
+	await t("context handler restores English tool args for the model", async () => {
+		const userMsg = { role: "user", content: "Soll das Depot Dividenden buchen? Bring es als Formular.", piTranslator: { modelText: "Should the depot app book dividends in the future? Ask via form." } };
+		const r = await handlers.context({ messages: [userMsg, translatedForm.message] }, ctx);
+		assert.ok(r?.messages, "context rewritten");
+		assert.equal(r.messages[1].content[0].arguments.questions[0].question, UI_ARGS.questions[0].question, "model sees English args");
+		assert.equal(r.messages[0].content, userMsg.piTranslator.modelText, "user modelText still restored");
+		assert.equal(translatedForm.message.content[0].arguments.questions[0].question, DE_BATCH[0], "session object NOT mutated (transcript keeps German)");
+	});
+
+	await t("second form call in same turn works (state independent)", async () => {
+		const msg = { role: "assistant", content: [{ type: "text", text: "Ich frage kurz:" }, { type: "toolCall", name: "ask_user", arguments: UI_ARGS }] };
+		const r = await handlers.message_end({ message: msg }, ctx);
+		assert.equal(r.message.content[1].arguments.questions[0].question, DE_BATCH[0], "block index handled correctly with leading text block");
+		assert.equal(r.message.content[0].text, "Ich frage kurz:", "leading narration passes through untouched");
+	});
+
+	await t("QUESTION carrying paths/URLs does not break form translation", async () => {
+		// Review MAJOR: masking the whole payload minted ⟦n⟧ placeholders from
+		// the question's code/paths that the translator must never echo →
+		// unmaskProtected failed by construction. Only SEGMENTS may be masked.
+		await handlers.before_agent_start({ prompt: "Fixe das Deployment in /srv/app/v2 (Log: https://grafana.example.com/d/abc) und frage mich per Formular.", systemPromptOptions: { sections } }, ctx);
+		const msg = { role: "assistant", content: [{ type: "toolCall", name: "ask_user", arguments: UI_ARGS }] };
+		const r = await handlers.message_end({ message: msg }, ctx);
+		assert.equal(r?.message?.content?.[0]?.arguments?.questions?.[0]?.question, DE_BATCH[0], "form still translates");
+		assert.ok(r.message.piTranslator.toolArgs["0"], "original still preserved");
+	});
+
+	await t("assistant message with BOTH translated draft and tool args restores both", async () => {
+		// MEDIUM hardening: original + toolArgs must restore sequentially, not
+		// via if/else (else the model silently reads translated tool args).
+		const dual = {
+			role: "assistant",
+			content: [
+				{ type: "text", text: "Ich frage kurz:" },
+				{ type: "toolCall", name: "ask_user", arguments: { questions: [{ id: "x", question: "Deutsche Frage?" }] } },
+			],
+			piTranslator: { original: "Let me ask:", toolArgs: { "1": { questions: [{ id: "x", question: "English question?" }] } } },
+		};
+		const r = await handlers.context({ messages: [dual] }, ctx);
+		assert.equal(r.messages[0].content[0].text, "Let me ask:", "text original restored");
+		assert.equal(r.messages[0].content[1].arguments.questions[0].question, "English question?", "tool args original restored too");
+	});
+
+	console.log(`pi-translator.form.test.ts: ${n} tests passed`);
+}
+main();

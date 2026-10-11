@@ -69,6 +69,12 @@ Design properties:
 * **Style is user config, not code.** Rules like "German answers must use
   informal *du*" are `promptAppend` entries — per-language labeled lines the
   translator applies itself.
+* **Question forms travel in your language too.** When the agent asks via
+  `ask_user`, the human-readable fields (question, detail, option labels)
+  are translated in one batched call; machine fields (`id`, `value`) are
+  never touched, and the model still reads its English original through the
+  `context` handler. Any structural doubt (lost or invented segment) → the
+  English form is kept and you are warned — a shifted label never ships.
 * **Nothing is harvested or persisted** beyond the normal session transcript
   (plus your own optional debug log).
 
@@ -125,8 +131,10 @@ project block overrides it per key:
 
 ## Verified behavior
 
-20 unit tests (prompt construction, script guard, length guard,
-placeholder mask/restore, echo detection, multimodal block order — no LLM involved:
+25 unit tests + 5 async integration tests over the real extension factory
+with a mocked model (prompt construction, script guard, length guard,
+placeholder mask/restore, echo detection, multimodal block order, ask_user
+form round-trip incl. `context` restore — no LLM involved: no LLM involved:
 `node --experimental-strip-types pi-translator.test.ts`) plus live
 echo-drills: German round-trips with the model demonstrably reading English
 (`context` restores logged across session resumes), English passthrough via
@@ -166,7 +174,13 @@ word-overlap guard.
   always be rejected. In forced mode the script guard is skipped (echo,
   length, and diff guards stay on).
 * Settings are read once per session — edits to `settings.json` take effect
-  in the next new session, not mid-session.
+  in the next new session, not mid-session. Code updates additionally wait
+  for a host-process restart: pi caches extension modules by path per
+  process boot, so a CLI run sees fresh code but a long-lived session host
+  keeps running the version it loaded.
+* `ask_caller` forms are deliberately **not** translated — their consumer is
+  another working-language agent, not a human. A translated `ask_user` pays
+  one extra batched translator call (~1–2 s on a healthy model).
 * Whether pi's compaction path passes through `context` is untested — watch
   item for very long sessions
   ([`docs/05` §deviations](docs/05-plan-v2.md)).

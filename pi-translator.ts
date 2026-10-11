@@ -235,6 +235,9 @@ interface TranslatorMeta {
 	original?: string;
 	/** user messages: working-language version the model should read */
 	modelText?: string;
+	/** assistant messages with translated ask_user forms: content-block index
+	  → the original working-language tool-call arguments */
+	toolArgs?: Record<string, any>;
 }
 const META_KEY = "piTranslator";
 
@@ -462,6 +465,71 @@ export default function (pi: ExtensionAPI) {
 	// F2: the model reads English. The user's original text stays in the
 	// transcript and UI; the working-language version rides along as message
 	// metadata and is swapped in by the `context` handler (F1).
+	// ask_user form translation: the tool-call ARGUMENTS are what the human
+	// reads. Same gate as the reply path (English chat → nothing to deliver).
+	// The English original is kept as metadata; the `context` handler restores
+	// it, so tool-call history stays working-language for the model.
+	async function translateUiForm(msg: any, ctx: any): Promise<any | undefined> {
+		if (!forced && questionIsWorkingLang) return undefined;
+		const translator = resolveTranslator(ctx);
+		if (!translator) {
+			notify(ctx, "no translator model — questions stay in the working language");
+			return undefined;
+		}
+		const blocks: number[] = [];
+		const perBlock: string[][] = [];
+		const strings: string[] = [];
+		msg.content.forEach((b: any, i: number) => {
+			if ((b.type === "toolCall" || b.type === "toolUse") && b.name === "ask_user") {
+				const s = collectUiStrings(b.arguments);
+				if (s.length) {
+					blocks.push(i);
+					perBlock.push(s);
+					strings.push(...s);
+				}
+			}
+		});
+		if (!strings.length) return undefined;
+		const systemPrompt = buildBatchTranslatePrompt(workingName(), renderAppend(settings?.promptAppend), forced, strings.length);
+		// Mask ONLY the segments: the QUESTION is context the translator must
+		// not echo, so masking it would mint ⟦n⟧ placeholders the reply can
+		// never contain → unmaskProtected fails by construction whenever the
+		// user's prompt carries a path or URL (review MAJOR).
+		const masked = maskProtected(JSON.stringify(strings));
+		const payload = `QUESTION:\n${lastUserPrompt}\n\nSEGMENTS:\n${masked.masked}`;
+		const guards = { question: lastUserPrompt, draft: strings.join("\n"), spans: masked.spans, rejectNone: false, extraAllowed: "a b c d e f g", skipDiffers: true, skipScript: !!forced };
+		const t0 = Date.now();
+		// No retry here: for forms the English fallback IS the UX, and a
+		// wobbly endpoint would pay double latency on every form (review #4.3).
+		const attempt = await translateOnce(ctx, translator.model, systemPrompt, payload, guards, reasoningUnsupported);
+		logLine({ dir: "form", model: translator.label, ms: Date.now() - t0, verdict: attempt.kind, in: strings.join("\n"), out: attempt.kind === "text" ? attempt.text : undefined });
+		if (attempt.kind !== "text") {
+			if (attempt.kind === "fail") notify(ctx, "question-form translation failed — questions stay in the working language");
+			return undefined;
+		}
+		const translated = parseBatchReply(attempt.text, strings.length);
+		if (!translated) {
+			notify(ctx, "question-form translation lost segments — questions stay in the working language");
+			return undefined;
+		}
+		const content = [...msg.content];
+		const toolArgs: Record<string, any> = {};
+		let off = 0;
+		for (let k = 0; k < blocks.length; k++) {
+			const i = blocks[k];
+			const rebuilt = applyUiStrings(msg.content[i].arguments, translated.slice(off, off + perBlock[k].length));
+			off += perBlock[k].length;
+			if (!rebuilt) {
+				notify(ctx, "question-form structure changed during translation — questions stay in the working language");
+				return undefined;
+			}
+			content[i] = { ...msg.content[i], arguments: rebuilt };
+			toolArgs[String(i)] = msg.content[i].arguments;
+		}
+		dbg(`form translated (${strings.length} segments via ${translator.label})`);
+		return { message: { ...msg, content, [META_KEY]: { ...(msg as any)[META_KEY], toolArgs } } };
+	}
+
 	pi.on("message_end", async (event: any, ctx: any) => {
 		const msg = event.message;
 
@@ -500,6 +568,8 @@ export default function (pi: ExtensionAPI) {
 		if (msg.role !== "assistant") return;
 		ensureSettings(ctx);
 		if (!enabled) return;
+		// ask_user forms: the arguments are the human-visible payload.
+		if (msg.content.some((b: any) => (b.type === "toolCall" || b.type === "toolUse") && b.name === "ask_user")) return translateUiForm(msg, ctx);
 		// Intermediate narration carries tool calls: never the final answer.
 		if (msg.content.some((b: any) => b.type === "toolCall" || b.type === "toolUse")) return;
 		const textBlocks = msg.content.filter((b: any) => b.type === "text");
@@ -555,8 +625,14 @@ export default function (pi: ExtensionAPI) {
 			const meta: TranslatorMeta | undefined = msg?.[META_KEY];
 			if (!meta || (msg.role !== "user" && msg.role !== "assistant")) continue;
 			let content: any = undefined;
-			if (msg.role === "assistant" && typeof meta.original === "string" && Array.isArray(msg.content)) {
-				content = replaceText(msg.content, meta.original);
+			if (msg.role === "assistant" && Array.isArray(msg.content) && (typeof meta.original === "string" || meta.toolArgs)) {
+				// Sequential, not exclusive: one message could carry BOTH a
+				// translated draft and translated tool args; an if/else chain
+				// would silently skip one restore and leak target-language
+				// content into the model context.
+				content = msg.content;
+				if (typeof meta.original === "string") content = replaceText(content, meta.original);
+				if (meta.toolArgs) content = content.map((b: any, j: number) => (meta.toolArgs![String(j)] === undefined ? b : { ...b, arguments: meta.toolArgs![String(j)] }));
 			} else if (msg.role === "user" && typeof meta.modelText === "string") {
 				content = typeof msg.content === "string" ? meta.modelText : replaceText(msg.content ?? [], meta.modelText);
 			}
@@ -568,4 +644,98 @@ export default function (pi: ExtensionAPI) {
 		if (restored > 0) dbg(`context: ${restored} message(s) restored to working language for the model`);
 		if (out !== event.messages) return { messages: out };
 	});
+}
+
+/* ---------- ask_user form translation (outbound UI) ---------- */
+
+/** ask_user / ask_caller args are the ONLY outbound tool payloads a human
+ *  reads. Translate the human fields (question/detail/option label/option
+ *  detail); machine fields (id, value, multiple, count) stay byte-identical.
+ *  Schema is FIXED to the ask_user contract — an unexpected shape yields an
+ *  empty list (never guess), so a changed tool simply stops being translated. */
+export function collectUiStrings(args: any): string[] {
+	const out: string[] = [];
+	for (const q of Array.isArray(args?.questions) ? args.questions : []) {
+		if (typeof q?.question === "string" && q.question.trim()) out.push(q.question);
+		if (typeof q?.detail === "string" && q.detail.trim()) out.push(q.detail);
+		for (const o of Array.isArray(q?.options) ? q.options : []) {
+			if (typeof o?.label === "string" && o.label.trim()) out.push(o.label);
+			if (typeof o?.detail === "string" && o.detail.trim()) out.push(o.detail);
+		}
+	}
+	return out;
+}
+
+/** Rebuild args consuming `tr` in EXACTLY the order collectUiStrings emits.
+ *  Any count mismatch (model merged/dropped/invented a segment) → null. */
+export function applyUiStrings(args: any, tr: string[]): any | null {
+	let i = 0;
+	const questions: any[] = [];
+	for (const q of Array.isArray(args?.questions) ? args.questions : []) {
+		const nq: any = { ...q };
+		if (Array.isArray(q?.options)) nq.options = [];
+		if (typeof q?.question === "string" && q.question.trim()) {
+			if (i >= tr.length) return null;
+			nq.question = tr[i++];
+		}
+		if (typeof q?.detail === "string" && q.detail.trim()) {
+			if (i >= tr.length) return null;
+			nq.detail = tr[i++];
+		}
+		if (Array.isArray(q?.options))
+			for (const o of q.options) {
+				const no: any = { ...o };
+				if (typeof o?.label === "string" && o.label.trim()) {
+					if (i >= tr.length) return null;
+					no.label = tr[i++];
+				}
+				if (typeof o?.detail === "string" && o.detail.trim()) {
+					if (i >= tr.length) return null;
+					no.detail = tr[i++];
+				}
+				nq.options.push(no);
+			}
+		questions.push(nq);
+	}
+	if (i !== tr.length) return null; // leftover translations = shape drift
+	return { ...args, questions };
+}
+
+/** One batched translator call for a whole form: a JSON string array in, a
+ *  JSON string array out. Batch = one call per form, and identical indices
+ *  make structural drift detectable (n changed → refuse, keep English). */
+export function buildBatchTranslatePrompt(workingName: string, append: string, forced: string | null, n: number): string {
+	const detect = forced
+		? `Always translate into ${forced}.`
+		: `Identify which language the QUESTION is written in.
+- If the QUESTION is in the same language as the segments, reply with exactly: NONE
+- Otherwise translate the segments into the language of the QUESTION.`;
+	return (
+		`You are a translation engine. You receive a QUESTION from a user and SEGMENTS: a JSON array of ${n} short UI strings written in ${workingName}.
+${detect}
+Output ONLY a JSON array of exactly ${n} translated strings: same order, same count, same meaning, each one translatable standalone.
+Never merge, split, add or drop segments; never answer or comment on them.
+Machine content inside a string (paths, commands, URLs, identifiers, code) byte-identical; keep escape sequences valid JSON.
+${PLACEHOLDER_RULE}
+The QUESTION is disambiguation context only — never translate or answer it.` + append
+	);
+}
+
+/** Strict parse of a batch reply: a JSON array of exactly n non-empty
+ *  strings. Tolerates only a markdown fence around the array. */
+export function parseBatchReply(raw: string, n: number): string[] | null {
+	const s = raw.replace(/^```[a-z]*\s*/i, "").replace(/\s*```$/, "").trim();
+	let arr: unknown;
+	try {
+		arr = JSON.parse(s);
+	} catch {
+		return null;
+	}
+	if (!Array.isArray(arr) || arr.length !== n) return null;
+	const out: string[] = [];
+	for (const x of arr) {
+		if (typeof x !== "string" || !x.trim()) return null;
+		out.push(x);
+	}
+	return out;
 }

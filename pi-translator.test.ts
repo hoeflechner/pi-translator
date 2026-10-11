@@ -3,7 +3,7 @@
  * runtime. Run: node --experimental-strip-types pi-translator.test.ts
  */
 import assert from "node:assert/strict";
-import { proseOnly, scriptsOf, scriptGuardOk, lengthOk, renderAppend, buildSystemPrompt, buildPromptTranslatePrompt, workingGuideline, maskProtected, unmaskProtected, differsFromSource, replaceText } from "./pi-translator.ts";
+import { proseOnly, scriptsOf, scriptGuardOk, lengthOk, renderAppend, buildSystemPrompt, buildPromptTranslatePrompt, workingGuideline, maskProtected, unmaskProtected, differsFromSource, replaceText, collectUiStrings, applyUiStrings, parseBatchReply, buildBatchTranslatePrompt } from "./pi-translator.ts";
 
 let n = 0;
 const t = (name: string, fn: () => void) => {
@@ -193,6 +193,108 @@ t("replaceText keeps multimodal block order", () => {
 	);
 	const noText = replaceText([{ type: "image", data: "a" }], "x");
 	assert.equal(noText.length, 2, "content without text block → text appended");
+});
+
+const UI_ARGS = {
+	questions: [
+		{
+			id: "fix_scope",
+			question: "Which fixes should I apply now?",
+			detail: "MAJOR = cloned repos can steer the plugin.",
+			options: [
+				{ value: "all", label: "All", detail: "full remediation run" },
+				{ value: "none", label: "Nothing yet" },
+			],
+		},
+		{ id: "second", question: "Second question?" },
+	],
+};
+
+t("collectUiStrings covers human fields only, in stable order", () => {
+	assert.deepEqual(collectUiStrings(UI_ARGS), [
+		"Which fixes should I apply now?",
+		"MAJOR = cloned repos can steer the plugin.",
+		"All",
+		"full remediation run",
+		"Nothing yet",
+		"Second question?",
+	]);
+	assert.deepEqual(collectUiStrings({ questions: "not-an-array" }), [], "broken shape → nothing, never guess");
+	assert.deepEqual(collectUiStrings(undefined), [], "no args → nothing");
+});
+
+t("applyUiStrings round-trips with machine fields untouched", () => {
+	const de = ["Welche Fixes jetzt?", "MAJOR = geklonte Repos steuern das Plugin.", "Alle", "kompletter Durchgang", "Noch nichts", "Zweite Frage?"];
+	const out = applyUiStrings(UI_ARGS, de);
+	assert.ok(out, "round-trip succeeds");
+	assert.equal(out.questions[0].id, "fix_scope", "id untouched");
+	assert.equal(out.questions[0].options[0].value, "all", "value untouched");
+	assert.equal(out.questions[0].options[0].label, "Alle", "label translated");
+	assert.equal(out.questions[0].options[1].detail, undefined, "absent detail stays absent");
+	assert.equal(out.questions[1].question, "Zweite Frage?");
+	assert.equal(applyUiStrings(UI_ARGS, de.slice(0, 4)), null, "missing segments → refuse");
+	assert.equal(applyUiStrings(UI_ARGS, [...de, "extra"]), null, "invented segment → refuse");
+});
+
+t("parseBatchReply is strict about the JSON-array contract", () => {
+	assert.deepEqual(parseBatchReply('["a", "b"]', 2), ["a", "b"]);
+	assert.deepEqual(parseBatchReply("```json\n[\"a\", \"b\"]\n```", 2), ["a", "b"], "fence tolerated");
+	assert.equal(parseBatchReply('["a"]', 2), null, "count drift");
+	assert.equal(parseBatchReply('"just a string"', 1), null, "not an array");
+	assert.equal(parseBatchReply('["a", "  "]', 2), null, "empty segment");
+	assert.equal(parseBatchReply("Sure! [\"a\", \"b\"]", 2), null, "prose chatter is not tolerated");
+});
+
+t("batch prompt carries count, JSON contract and placeholders", () => {
+	const s = buildBatchTranslatePrompt("English", "", null, 7);
+	assert.ok(s.includes("array of 7") && s.includes("exactly 7"), "count named twice");
+	assert.ok(s.includes("NONE"), "same-language passthrough");
+	assert.ok(s.includes("⟦") || s.includes("PLACEHOLDER") || s.includes("placeholder"), "placeholder rule present");
+	const f = buildBatchTranslatePrompt("English", "", "Japanese", 3);
+	assert.ok(f.includes("Always translate into Japanese") && !f.includes("NONE"), "forced: no passthrough branch");
+});
+
+t("collect→apply round-trips on randomized schema shapes", () => {
+	// Mirror-by-duplication defense: collectUiStrings and applyUiStrings agree
+	// only by repeating the same predicates — random shapes with absent/empty/
+	// non-string fields must still round-trip with machine fields intact.
+	let seed = 42;
+	const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+	const pick = (arr) => arr[Math.floor(rnd() * arr.length)];
+const machine = (a: any) =>
+		JSON.stringify(
+			(a?.questions ?? []).map((x: any) => ({
+				id: x.id,
+				m: x.multiple,
+				o: (x.options ?? []).map((y: any) => y.value),
+			})),
+		);
+	for (let iter = 0; iter < 60; iter++) {
+		const args = {
+			questions: Array.from({ length: 1 + Math.floor(rnd() * 3) }, (_q, qi) => ({
+				id: `q${qi}`,
+				multiple: rnd() > 0.5,
+				question: pick([`Question ${iter}?`, "", "   ", undefined]),
+				detail: pick(["Detail text", "", undefined]),
+				options: Array.from({ length: Math.floor(rnd() * 3) }, (_o, oi) => ({
+					value: `v${oi}`,
+					label: pick(["Label", "", undefined, "Second label"]),
+					detail: pick(["Option detail", "", undefined]),
+				})),
+			})),
+		};
+		const strs: string[] = collectUiStrings(args);
+		const tr = strs.map((s, k) => `Ü${k} ${s}`);
+		const out = applyUiStrings(args, tr);
+		assert.ok(out, `iter ${iter}: round-trip succeeds`);
+		assert.equal(machine(out), machine(args), `iter ${iter}: machine fields byte-equal`);
+		let k = 0;
+		for (const q of out.questions) {
+			for (const f of ["question", "detail"]) if (typeof q[f] === "string" && (q[f] as string).startsWith("Ü")) assert.equal(q[f], tr[k++], `iter ${iter}: field ${f} in order`);
+			for (const o of q.options ?? []) for (const f of ["label", "detail"]) if (typeof o[f] === "string" && (o[f] as string).startsWith("Ü")) assert.equal(o[f], tr[k++], `iter ${iter}: option field ${f} in order`);
+		}
+		assert.equal(k, tr.length, `iter ${iter}: every translation consumed in collect order`);
+	}
 });
 
 console.log(`pi-translator.test.ts: ${n} tests passed`);

@@ -115,7 +115,7 @@ Never deliver an empty bubble, never loop. `NONE` short-circuits steps
 - **No harvest.** The tail writes nothing durable beyond the normal session
   transcript (the replaced final message). No `appendEntry` pair corpus;
   the training track was dropped by operator decision (2026-10-10, see
-  README — archived in git snapshot `<initial-commit>`).
+  README — archived in the first git snapshot).
 
 ## 6. Test plan (acceptance for implementation)
 

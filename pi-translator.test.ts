@@ -3,7 +3,7 @@
  * runtime. Run: node --experimental-strip-types pi-translator.test.ts
  */
 import assert from "node:assert/strict";
-import { proseOnly, scriptsOf, scriptGuardOk, lengthOk, renderAppend, buildSystemPrompt, buildPromptTranslatePrompt, workingGuideline, maskProtected, unmaskProtected, differsFromSource } from "./pi-translator.ts";
+import { proseOnly, scriptsOf, scriptGuardOk, lengthOk, renderAppend, buildSystemPrompt, buildPromptTranslatePrompt, workingGuideline, maskProtected, unmaskProtected, differsFromSource, replaceText } from "./pi-translator.ts";
 
 let n = 0;
 const t = (name: string, fn: () => void) => {
@@ -174,6 +174,25 @@ t("differsFromSource rejects echoed/meta English output, accepts real translatio
 		"Beende oder konfiguriere einen der beiden Prozesse: Ermittle den aktuellen Inhaber mit ss -tlnp und stoppe ihn oder weise dem neuen Dienst einen freien Port zu.";
 	assert.equal(differsFromSource(de, draft), true, "real German translation passes");
 	assert.equal(differsFromSource("Yes it is.", "short draft."), true, "tiny source → no signal, pass");
+});
+
+// Regression (review finding #2): multimodal block ORDER must survive the
+// text swap — "image, question, image" must not become "question, images".
+t("replaceText keeps multimodal block order", () => {
+	const blocks = [
+		{ type: "image", data: "a" },
+		{ type: "text", text: "original question" },
+		{ type: "image", data: "b" },
+		{ type: "text", text: "second text block (merged away)" },
+	];
+	const out = replaceText(blocks, "übersetzt");
+	assert.deepEqual(
+		out.map((b: any) => [b.type, b.type === "text" ? b.text : b.data]),
+		[["image", "a"], ["text", "übersetzt"], ["image", "b"]],
+		"first text block replaced in place, extras dropped, image positions kept",
+	);
+	const noText = replaceText([{ type: "image", data: "a" }], "x");
+	assert.equal(noText.length, 2, "content without text block → text appended");
 });
 
 console.log(`pi-translator.test.ts: ${n} tests passed`);

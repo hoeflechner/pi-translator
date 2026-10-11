@@ -10,7 +10,7 @@
  *
  * Why: the locally served ultra-sparse MoE model corrupts German GENERATION
  * in long contexts (measured 10%→24% artifacts by context quartile) and is
-clean in English.
+ * clean in English.
  * Spec docs/03 + upgrade plan docs/05 (F1 context-restore, F2 prompt
  * translation, F3 placeholder protection, F4 original, F5 debug log).
  * No external MT. No detector: the translator LLM identifies languages
@@ -22,7 +22,7 @@ clean in English.
  *      PI_TRANSLATOR_DEBUG=1, PI_TRANSLATOR_LOG=<file.jsonl>.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, chmodSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -206,17 +206,28 @@ interface TailSettings {
 	log?: string;
 }
 
-function loadSettings(cwd: string): TailSettings | null {
-	// shortcut: first block wins (project overrides global); merge per-key when it ever bites.
-	for (const path of [join(cwd, ".pi", "settings.json"), join(homedir(), ".pi", "agent", "settings.json")]) {
-		try {
-			const block = JSON.parse(readFileSync(path, "utf-8"))?.["pi-translator"];
-			if (block && typeof block === "object") return block as TailSettings;
-		} catch {
-			/* missing or invalid file = fall through to defaults */
-		}
+function readBlock(path: string): TailSettings | null {
+	try {
+		const block = JSON.parse(readFileSync(path, "utf-8"))?.["pi-translator"];
+		if (block && typeof block === "object") return block as TailSettings;
+	} catch {
+		/* missing or invalid file = no block */
 	}
 	return null;
+}
+
+/** Trust-scoped settings (review MAJOR): model/log/debug/promptAppend steer
+ *  where plaintext goes, so the PROJECT block is read only when pi itself
+ *  trusts the folder (`ctx.isProjectTrusted()`) — the same gate pi applies to
+ *  project settings. An untrusted clone can no longer reroute the translator
+ *  model, enable silent plaintext logging, or inject prompt text. User-global
+ *  is the base; a trusted project block overrides per key. */
+function loadSettings(cwd: string, projectTrusted: boolean): TailSettings | null {
+	const base = readBlock(join(homedir(), ".pi", "agent", "settings.json"));
+	const project = projectTrusted ? readBlock(join(cwd, ".pi", "settings.json")) : null;
+	if (!base) return project;
+	if (!project) return base;
+	return { ...base, ...project, promptAppend: { ...base.promptAppend, ...project.promptAppend } };
 }
 
 /* ---------- message metadata ---------- */
@@ -229,10 +240,14 @@ interface TranslatorMeta {
 }
 const META_KEY = "piTranslator";
 
-/** Content with its text portion replaced, non-text blocks preserved in place. */
-function replaceText(content: any[], text: string): any[] {
-	const nonText = content.filter((b: any) => b.type !== "text");
-	return [...nonText, { type: "text", text }];
+/** Replace the FIRST text block in place, drop the others: multimodal blocks
+ *  (images…) keep their original positions — "image, then question" must not
+ *  become "question, then image" for the model. */
+export function replaceText(content: any[], text: string): any[] {
+	const idx = content.findIndex((b: any) => b.type === "text");
+	if (idx < 0) return [...content, { type: "text", text }];
+	const after = content.slice(idx + 1).filter((b: any) => b.type !== "text");
+	return [...content.slice(0, idx), { ...content[idx], type: "text", text }, ...after];
 }
 
 /* ---------- translation attempt ---------- */
@@ -244,9 +259,10 @@ type Attempt = { kind: "none" } | { kind: "text"; text: string } | { kind: "fail
 // overflow — cap it at the lowest level here. Some models reject that thinking
 // level outright (field report: one locally served MoE endpoint answers
 // "error" with empty content) — one probe per model, then call without it.
-const reasoningUnsupported = new Set<string>();
-
-async function callTranslator(ctx: any, model: any, systemPrompt: string, payload: string): Promise<any> {
+// The probe Set is PER SESSION (factory scope, passed in): a module-scoped Set
+// in a multi-session host process lets one session's transient network blip
+// permanently flip every user's sessions on that model (review MEDIUM).
+async function callTranslator(ctx: any, model: any, systemPrompt: string, payload: string, reasoningUnsupported: Set<string>): Promise<any> {
 	const key = `${model.provider}/${model.id}`;
 	const request = { systemPrompt, messages: [{ role: "user", timestamp: Date.now(), content: payload }] };
 	const opts: any = { signal: ctx.signal };
@@ -263,10 +279,11 @@ async function translateOnce(
 	model: any,
 	systemPrompt: string,
 	payload: string,
-	guards: { question: string; draft: string; spans: string[]; rejectNone: boolean; extraAllowed?: string; skipDiffers?: boolean },
+	guards: { question: string; draft: string; spans: string[]; rejectNone: boolean; extraAllowed?: string; skipDiffers?: boolean; skipScript?: boolean },
+	reasoningUnsupported: Set<string>,
 ): Promise<Attempt> {
 	try {
-		const out = await callTranslator(ctx, model, systemPrompt, payload);
+		const out = await callTranslator(ctx, model, systemPrompt, payload, reasoningUnsupported);
 		if (out.stopReason === "error") return { kind: "fail" };
 		const raw = (out.content as any[])
 			.filter((b) => b.type === "text")
@@ -279,8 +296,14 @@ async function translateOnce(
 		if (!guards.rejectNone && raw === "NONE") return { kind: "none" };
 		const restored = unmaskProtected(raw, guards.spans);
 		if (!restored.ok) return { kind: "fail" }; // lost or duplicated ⟦n⟧
-		if (!scriptGuardOk(restored.text, guards.question, guards.draft, guards.extraAllowed ?? "")) return { kind: "fail" };
-		if (!lengthOk(restored.text, guards.draft)) return { kind: "fail" };
+		// Forced target: the allowed-script set can only be derived from
+		// QUESTION ∪ DRAFT, so a legitimately forced non-Latin target (e.g.
+		// /translator Japanese with a Latin question) could never pass. The
+		// leak-class guard is off in forced mode — deliberate, operator request.
+		if (!guards.skipScript && !scriptGuardOk(restored.text, guards.question, guards.draft, guards.extraAllowed ?? "")) return { kind: "fail" };
+		// Terse drafts (prose under ~80 chars) translate disproportionally
+		// longer in inflecting targets; refusing correct output is worse.
+		if (proseOnly(guards.draft).length >= 80 && !lengthOk(restored.text, guards.draft)) return { kind: "fail" };
 		if (!guards.skipDiffers && !differsFromSource(restored.text, guards.draft)) return { kind: "fail" }; // untranslated/meta output
 		return { kind: "text", text: restored.text };
 	} catch {
@@ -298,6 +321,11 @@ export default function (pi: ExtensionAPI) {
 	let lastUserPrompt = "";
 	let questionIsWorkingLang = true; // set by the prompt-translation verdict
 	let lastOriginal = "";
+	// reasoning-probe state lives HERE, per extension instance (per session):
+	// in a shared host process a module-level Set would let one session's
+	// transient failure degrade every other session on that model, forever.
+	const reasoningUnsupported = new Set<string>();
+	const chmoddedLogs = new Set<string>();
 
 	const dbg = (msg: string) => {
 		if (process.env.PI_TRANSLATOR_DEBUG === "1" || settings?.debug) console.error(`[pi-translator] ${msg}`);
@@ -310,7 +338,18 @@ export default function (pi: ExtensionAPI) {
 		const file = process.env.PI_TRANSLATOR_LOG ?? settings?.log;
 		if (!file) return;
 		try {
-			appendFileSync(file, JSON.stringify({ ts: new Date().toISOString(), ...rec }) + "\n");
+			// The record contains the FULL plaintext of one translation (in+out)
+			// — a complete bilingual transcript of the session. owner-only, and
+			// fix up files created by older versions or other writers.
+			appendFileSync(file, JSON.stringify({ ts: new Date().toISOString(), ...rec }) + "\n", { mode: 0o600 });
+			if (!chmoddedLogs.has(file)) {
+				try {
+					chmodSync(file, 0o600);
+				} catch {
+					/* foreign-owned file: keep logging, keep trying */
+				}
+				chmoddedLogs.add(file);
+			}
 		} catch {
 			/* logging must never break delivery */
 		}
@@ -318,7 +357,7 @@ export default function (pi: ExtensionAPI) {
 
 	function ensureSettings(ctx: any) {
 		if (settings !== undefined) return;
-		settings = loadSettings(ctx.cwd);
+		settings = loadSettings(ctx.cwd, typeof ctx.isProjectTrusted === "function" ? ctx.isProjectTrusted() : false);
 		if (!targetResolved) {
 			const s = settings ?? {};
 			if (settings && (s.target ?? "auto") !== "off") enabled = true; // a configured block means intent
@@ -361,8 +400,8 @@ export default function (pi: ExtensionAPI) {
 				? `QUESTION:\n${guards.question}\n\nDRAFT:\n${masked.masked}`
 				: `USER REQUEST:\n${masked.masked}`;
 		const t0 = Date.now();
-		let attempt = await translateOnce(ctx, translator.model, systemPrompt, payload, { ...guards, spans: masked.spans });
-		if (attempt.kind === "fail") attempt = await translateOnce(ctx, translator.model, systemPrompt, payload, { ...guards, spans: masked.spans });
+		let attempt = await translateOnce(ctx, translator.model, systemPrompt, payload, { ...guards, spans: masked.spans }, reasoningUnsupported);
+		if (attempt.kind === "fail") attempt = await translateOnce(ctx, translator.model, systemPrompt, payload, { ...guards, spans: masked.spans }, reasoningUnsupported);
 		logLine({
 			dir: direction,
 			model: translator.label,
@@ -432,6 +471,10 @@ export default function (pi: ExtensionAPI) {
 			ensureSettings(ctx);
 			questionIsWorkingLang = true; // reset each turn; the verdict below decides
 			const text = typeof msg.content === "string" ? msg.content : (msg.content ?? []).filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n\n");
+			// Reply payload QUESTION must track the LATEST user text, not just the
+			// turn opener: a mid-turn German follow-up into an English-opening
+			// turn would otherwise be answered in English, silently (review MEDIUM).
+			if (text.trim()) lastUserPrompt = text;
 			if (!enabled || !text.trim()) return;
 			const translator = resolveTranslator(ctx);
 			if (!translator) {
@@ -481,7 +524,7 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		const systemPrompt = buildSystemPrompt(workingName(), renderAppend(settings?.promptAppend), forced);
-		const attempt = await translateWithRetry(ctx, translator, systemPrompt, draft, { question: lastUserPrompt, draft, spans: [], rejectNone: !!forced }, "reply");
+		const attempt = await translateWithRetry(ctx, translator, systemPrompt, draft, { question: lastUserPrompt, draft, spans: [], rejectNone: !!forced, skipScript: !!forced }, "reply");
 		if (attempt.kind === "fail") {
 			notify(ctx, `translation failed or violated validation (${translator.label}) — delivering original answer`);
 			return;

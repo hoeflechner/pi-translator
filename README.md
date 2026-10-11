@@ -97,8 +97,16 @@ for a JSONL record of every translation call.
 | `PI_TRANSLATOR_WORKING` | `working` | `en` | language the agent works in |
 | `PI_TRANSLATOR_TARGET` | `target` | `auto` | `auto`, `off`, or a language name to force |
 | `PI_TRANSLATOR_MODEL` | `model` | **the agent's own model** | translator override (e.g. pin a clean, larger model behind a weak worker) |
+| `PI_TRANSLATOR_DEBUG=1` | `debug` | off | debug lines on stderr |
+| `PI_TRANSLATOR_LOG=<file>` | `log` | off | JSONL audit of every translation call |
 
-Settings live in `<cwd>/.pi/settings.json` or `~/.pi/agent/settings.json`:
+Settings live in `<cwd>/.pi/settings.json` or `~/.pi/agent/settings.json`.
+**Placement is a trust decision:** the user-global block is always read; the
+project block is read *only when pi trusts the folder* (`/trust`, or approving
+the first prompt) — the same gate pi applies to project settings themselves.
+An untrusted clone can therefore never reroute `model`, silently enable `log`,
+or inject `promptAppend` text. The user-global block is the base; a trusted
+project block overrides it per key:
 
 ```json
 {
@@ -110,10 +118,15 @@ Settings live in `<cwd>/.pi/settings.json` or `~/.pi/agent/settings.json`:
 }
 ```
 
+> **`log` writes full plaintext.** Every record contains the complete input
+> and output of one translation — a bilingual transcript of your session.
+> The file is created `0600`, grows without bound, and never rotates. Point
+> it somewhere you actually want plaintext to live, or leave it off.
+
 ## Verified behavior
 
-19 unit tests (prompt construction, script guard, length guard,
-placeholder mask/restore, echo detection — no LLM involved:
+20 unit tests (prompt construction, script guard, length guard,
+placeholder mask/restore, echo detection, multimodal block order — no LLM involved:
 `node --experimental-strip-types pi-translator.test.ts`) plus live
 echo-drills: German round-trips with the model demonstrably reading English
 (`context` restores logged across session resumes), English passthrough via
@@ -135,8 +148,9 @@ word-overlap guard.
 * **Thinking-level probe:** translator calls request reasoning `"minimal"`,
   but models differ in support (field report: one locally served
   MoE endpoint answered `stopReason: "error"` with empty content for that level
-  while accepting it never). One failed probe per model flips all later calls
-  to the provider default. Without this, a session on such a model had a
+  while accepting it never). One failed probe — per session and model, never
+  process-global — flips later calls to the provider default. Without this, a
+  session on such a model had a
   dead tail: prompt translation failed, the worker drafted in the user
   language itself, and reply translation failed too — visible fallback every
   turn.
@@ -146,6 +160,13 @@ word-overlap guard.
   catch loud failures (CJK leakage, echoes, truncation) — silent compounds
   can still slip through. Pin `model` to a clean model if that matters for
   the workload.
+* **Forced non-Latin targets run without the script guard.** The guard derives
+  its allowed-script set from question + draft; a forced target's script cannot
+  be licensed by Latin-only evidence, so correct Japanese delivery would
+  always be rejected. In forced mode the script guard is skipped (echo,
+  length, and diff guards stay on).
+* Settings are read once per session — edits to `settings.json` take effect
+  in the next new session, not mid-session.
 * Whether pi's compaction path passes through `context` is untested — watch
   item for very long sessions
   ([`docs/05` §deviations](docs/05-plan-v2.md)).
@@ -160,4 +181,4 @@ word-overlap guard.
 
 *Not published to npm yet. A German-specific predecessor ("german-tail")
 proved the mechanism first and is preserved in the git history
-(`git show <initial-commit>`).*
+(`git show $(git rev-list --max-parents=0 HEAD)`).*

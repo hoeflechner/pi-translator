@@ -71,11 +71,12 @@ without `PI_TRANSLATOR=1`.
 
 The verified German-specific v1 extension and the optional training track
 were removed on 2026-10-10 (operator decision: no harvesting, no
-German-specific artifacts). Both are preserved in git snapshot `<initial-commit>`:
+German-specific artifacts). Both are preserved in the first git snapshot
+(`INIT=$(git rev-list --max-parents=0 HEAD)`):
 
 ```bash
-git show <initial-commit>:reference/german-tail-v1.ts   # the verified v1 code
-git show <initial-commit>:docs/04-training-track.md     # the parked training track
+git show $INIT:reference/german-tail-v1.ts   # the verified v1 code
+git show $INIT:docs/04-training-track.md     # the parked training track
 ```
 
 The v1 test log (02 §test-log) records the end-to-end verification of the

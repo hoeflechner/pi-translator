@@ -91,7 +91,7 @@ components needed here.
 ## v1 reference implementation — test log (all PASSED 2026-10-10)
 
 The v1 file (removed from the tree 2026-10-10; recover via
-`git show <initial-commit>:reference/german-tail-v1.ts`) passed:
+`git show $(git rev-list --max-parents=0 HEAD):reference/german-tail-v1.ts`) passed:
 
 1. Load smoke: `pi --extension ... --model <clean-model> --print
    "Reply with exactly: extension-load-ok"` → `extension-load-ok`.

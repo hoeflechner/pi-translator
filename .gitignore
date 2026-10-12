@@ -1,0 +1,4 @@
+# session plaintext audit log (PI_TRANSLATOR_LOG / pi-translator.log)
+# holds the full in+out of every translation call - never commit it
+auditlog/*
+!auditlog/.gitkeep

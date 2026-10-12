@@ -22,9 +22,9 @@
  *      PI_TRANSLATOR_DEBUG=1, PI_TRANSLATOR_LOG=<file.jsonl>.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { appendFileSync, chmodSync, readFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 // shortcut: names for naming the working/forced language in the prompt only;
 // raw code is the fallback for anything unlisted. Not a target-language table.
@@ -342,6 +342,9 @@ export default function (pi: ExtensionAPI) {
 			// The record contains the FULL plaintext of one translation (in+out)
 			// — a complete bilingual transcript of the session. owner-only, and
 			// fix up files created by older versions or other writers.
+			// appendFileSync does not create the parent dir and the catch below would
+			// swallow the ENOENT, so a deleted log dir would mean silent no-logging.
+			mkdirSync(dirname(file), { recursive: true });
 			appendFileSync(file, JSON.stringify({ ts: new Date().toISOString(), ...rec }) + "\n", { mode: 0o600 });
 			if (!chmoddedLogs.has(file)) {
 				try {

@@ -63,6 +63,7 @@ async function main() {
 					calls.push(payload.slice(0, 30));
 					if (payload.startsWith("USER REQUEST:")) return { stopReason: "stop", content: [{ type: "text", text: "Should the depot app book dividends in the future? Ask via form." }] };
 					if (payload.includes("SEGMENTS:")) return { stopReason: "stop", content: [{ type: "text", text: JSON.stringify(DE_BATCH) }] };
+					if (payload.includes("\nDRAFT:")) return { stopReason: "stop", content: [{ type: "text", text: "Kurz gesagt: Das Depot soll Dividenden verbuchen." }] };
 					return { stopReason: "error", content: [] };
 				},
 			}),
@@ -133,6 +134,20 @@ async function main() {
 		const r = await handlers.context({ messages: [dual] }, ctx);
 		assert.equal(r.messages[0].content[0].text, "Let me ask:", "text original restored");
 		assert.equal(r.messages[0].content[1].arguments.questions[0].question, "English question?", "tool args original restored too");
+	});
+
+	await t("injected custom-message run (no event.prompt) keeps the delivery language", async () => {
+		// Regression 2026-10-14: a delegation_result wakes the session through
+		// _startRun({ messageType: "custom" }), so before_agent_start carried no
+		// prompt; lastUserPrompt was cleared and every later answer shipped in the
+		// working language — silently (measured: 3 of 4 broken answers in one session).
+		await handlers.before_agent_start({ prompt: "Soll das Depot Dividenden buchen?", systemPromptOptions: { sections } }, ctx);
+		await handlers.message_end({ message: { role: "user", content: "Soll das Depot Dividenden buchen?" } }, ctx);
+		await handlers.before_agent_start({ messageType: "custom", systemPromptOptions: { sections } }, ctx);
+		const msg = { role: "assistant", content: [{ type: "text", text: "Restating: the depot should book dividends." }] };
+		const r = await handlers.message_end({ message: msg }, ctx);
+		assert.equal(r?.message?.content?.[0]?.text, "Kurz gesagt: Das Depot soll Dividenden verbuchen.", "answer after an injection is delivered translated");
+		assert.equal(r?.message?.piTranslator?.original, "Restating: the depot should book dividends.", "English draft kept as metadata");
 	});
 
 	console.log(`pi-translator.form.test.ts: ${n} tests passed`);

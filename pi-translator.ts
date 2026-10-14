@@ -90,10 +90,17 @@ export function lengthOk(outText: string, draft: string): boolean {
  *  what the bad output degenerated to anyway. Short sources carry too
  *  little signal to judge → always pass. */
 export function differsFromSource(outText: string, source: string): boolean {
+	// proseOnly on both sides: the answer carries every masked span (code fences,
+	// inline code) byte-identically by design, so counting those tokens scores them
+	// as "shared words" and rejects correct output of code-dominant answers — the
+	// commonest shape a coding agent writes (measured: 0.765 shared vs the 0.6
+	// ceiling on a two-command fence).
+	// shortcut: prose below the 8-word signal floor stays unjudgeable (a verbatim echo
+	// of it passes), and masked URLs/paths outside fences still count as shared.
 	const words = (s: string) => new Set((s.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []));
-	const src = words(source);
+	const src = words(proseOnly(source));
 	if (src.size < 8) return true;
-	const out = [...words(outText)];
+	const out = [...words(proseOnly(outText))];
 	if (out.length === 0) return false;
 	const shared = out.filter((w) => src.has(w)).length;
 	return shared / out.length < 0.6;
@@ -102,7 +109,9 @@ export function differsFromSource(outText: string, source: string): boolean {
 /** F3 (docs/05): mask protected spans with ⟦n⟧ placeholders before any
  *  translation call; restored verbatim afterwards. Placeholders use brackets
  *  no translator plausibly rewrites, and completeness is asserted on restore. */
-const PROTECTED = /```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`|https?:\/\/\S+|(?:^|[\s(])~?\/[\w.\-\/@]{2,}(?![\w.-])/gm;
+// The `C:\...` branch is not decoration: on a Windows host the absolute paths this
+// agent quotes constantly matched nothing and went to the translator unprotected.
+const PROTECTED = /```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`|https?:\/\/\S+|[A-Za-z]:[\\/][\w.\-\\/@]{2,}|(?:^|[\s(])~?\/[\w.\-\/@]{2,}(?![\w.-])/gm;
 
 export function maskProtected(text: string): { masked: string; spans: string[] } {
 	const spans: string[] = [];
@@ -457,7 +466,12 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("before_agent_start", async (event: any, ctx: any) => {
-		lastUserPrompt = event.prompt;
+		// Only a real user prompt may redefine the delivery language. A run woken by
+		// an injected custom message (delegation_result from the subagents extension)
+		// starts with messageType "custom" and NO prompt, so assigning unconditionally
+		// cleared lastUserPrompt and the reply guard below silently skipped
+		// translation — the answer shipped in the working language.
+		if (typeof event.prompt === "string" && event.prompt) lastUserPrompt = event.prompt;
 		ensureSettings(ctx);
 		const sections = event.systemPromptOptions?.sections;
 		if (!sections) return;
@@ -579,7 +593,12 @@ export default function (pi: ExtensionAPI) {
 		if (textBlocks.length === 0) return;
 		const draft = textBlocks.map((b: any) => b.text).join("\n\n").trim();
 		// Empty bubbles are an upstream generation bug, not ours to mask.
-		if (!draft || !lastUserPrompt) return;
+		if (!draft) return;
+		// Never silent: this skip ships the answer in the working language.
+		if (!lastUserPrompt) {
+			dbg("reply: no user prompt seen in this session yet → no delivery translation");
+			return;
+		}
 
 		// Reply gate: the prompt-translation verdict already told us the
 		// question is in the working language → nothing to translate to.

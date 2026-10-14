@@ -174,6 +174,13 @@ t("differsFromSource rejects echoed/meta English output, accepts real translatio
 		"Beende oder konfiguriere einen der beiden Prozesse: Ermittle den aktuellen Inhaber mit ss -tlnp und stoppe ihn oder weise dem neuen Dienst einen freien Port zu.";
 	assert.equal(differsFromSource(de, draft), true, "real German translation passes");
 	assert.equal(differsFromSource("Yes it is.", "short draft."), true, "tiny source → no signal, pass");
+	// regression 2026-10-14: code-dominant draft — tiny prose, a fence full of tokens
+	// that are identical by contract, must not be read as "untranslated".
+	const fenceDraft = "Use:\n```bash\ncd /srv/app\nsystemctl restart sitop-mcp\njournalctl -u sitop-mcp -f\n```\nThat is all.";
+	const fenceDe = "Verwende:\n```bash\ncd /srv/app\nsystemctl restart sitop-mcp\njournalctl -u sitop-mcp -f\n```\nDas war's.";
+	assert.equal(differsFromSource(fenceDe, fenceDraft), true, "correct output of a code-dominant draft passes");
+	// known limit of the prose comparison: that draft has 4 prose words, below the
+	// 8-word signal floor, so a verbatim echo of it is not judgeable here.
 });
 
 // Regression (review finding #2): multimodal block ORDER must survive the

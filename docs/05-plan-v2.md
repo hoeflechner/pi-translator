@@ -42,9 +42,20 @@ axis entirely:
    original before each LLM call. Prompt-cache note: the provider keeps
    seeing the same English prefix → cache stays intact.
 
-Side effects (all good): compaction summarizes English context (the §7
-compaction worry evaporates); reading-side contamination (01-findings: model
-*reads* German as Chinese) is cut off on the output side too.
+Side effects: reading-side contamination (01-findings: model *reads* German as
+Chinese) is cut off on the output side too.
+
+**Correction (measured 2026-10-14, pi 1.2.0).** An earlier version of this
+section claimed compaction summarizes English context and that the §7 compaction
+worry therefore evaporated. It does not: the `context` handler runs only on the
+request path (`transformContext` in pi's agent loop), never on compaction —
+`generateSummaryWithUsage()` serializes the **stored** messages, i.e. the
+user-language deliveries, and the result enters context as a `compactionSummary`
+message with no `original` metadata. So the summary really was target-language
+text in the model context, written by the model this project distrusts in that
+language. What F1 actually does is make the situation fixable: the `context`
+handler now recognizes `compactionSummary`/`branchSummary` and hands the model a
+working-language translation of it (translated once, cached by text digest).
 
 ## F2 — Translate the user prompt (input side)
 

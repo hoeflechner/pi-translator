@@ -29,6 +29,9 @@ import { dirname, join } from "node:path";
 // shortcut: names for naming the working/forced language in the prompt only;
 // raw code is the fallback for anything unlisted. Not a target-language table.
 const LANG_NAMES: Record<string, string> = { en: "English", de: "German", fr: "French", es: "Spanish", it: "Italian" };
+// "de", "German" and "german" all mean the same thing to an operator writing a
+// settings block or typing /translator German.
+const TARGET_LOOKUP: Record<string, string> = Object.fromEntries(Object.entries(LANG_NAMES).flatMap(([k, v]) => [[k, v], [v.toLowerCase(), v]]));
 
 /* ---------- pure helpers (exported for pi-translator.test.ts) ---------- */
 
@@ -262,7 +265,20 @@ export function replaceText(content: any[], text: string): any[] {
 
 /* ---------- translation attempt ---------- */
 
-type Attempt = { kind: "none" } | { kind: "text"; text: string } | { kind: "fail" };
+/** `error` = the call itself broke; `reject` = a guard refused the output.
+ *  The split is the whole point: a guard rejection is deterministic, so the
+ *  identical retry can only produce the same rejection and burn a second call
+ *  (measured: it doubled cost + latency on every turn of a code-dominant answer).
+ *  `why: "timeout"` is not retried either — a slow model retried is a double stall. */
+type Attempt = { kind: "none" } | { kind: "text"; text: string } | { kind: "error"; why: "transport" | "timeout" } | { kind: "reject"; guard: string };
+
+/** Anything but a usable translation or an explicit NONE. */
+const failed = (a: Attempt) => a.kind === "error" || a.kind === "reject";
+
+// Hard ceiling on one translator call. ctx.signal is pi's run-abort signal and is
+// undefined whenever the agent is not streaming, so without this a hanging
+// endpoint stalled the turn forever with nothing said at all.
+const CALL_TIMEOUT_MS = 25000;
 
 // Translator call. reasoning "minimal": translation needs no thinking, and the
 // measured empty-completion class (01-findings §5) is a thinking-budget
@@ -272,16 +288,28 @@ type Attempt = { kind: "none" } | { kind: "text"; text: string } | { kind: "fail
 // The probe Set is PER SESSION (factory scope, passed in): a module-scoped Set
 // in a multi-session host process lets one session's transient network blip
 // permanently flip every user's sessions on that model (review MEDIUM).
-async function callTranslator(ctx: any, model: any, systemPrompt: string, payload: string, reasoningUnsupported: Set<string>): Promise<any> {
+async function callTranslator(ctx: any, model: any, systemPrompt: string, payload: string, reasoningUnsupported: Set<string>, timedOut: { v: boolean }): Promise<any> {
 	const key = `${model.provider}/${model.id}`;
 	const request = { systemPrompt, messages: [{ role: "user", timestamp: Date.now(), content: payload }] };
-	const opts: any = { signal: ctx.signal };
+	const ctrl = new AbortController();
+	const timer = setTimeout(() => {
+		timedOut.v = true;
+		ctrl.abort();
+	}, CALL_TIMEOUT_MS);
+	const relay = () => ctrl.abort();
+	ctx.signal?.addEventListener?.("abort", relay);
+	const opts: any = { signal: ctrl.signal };
 	if (!reasoningUnsupported.has(key)) opts.reasoning = "minimal";
-	const out = await ctx.modelRegistry.streamSimple(model, request, opts).result();
-	const text = (out.content as any[]).filter((b) => b.type === "text").map((b) => b.text).join("").trim();
-	if (text || reasoningUnsupported.has(key)) return out;
-	reasoningUnsupported.add(key);
-	return ctx.modelRegistry.streamSimple(model, request, { signal: ctx.signal }).result();
+	try {
+		const out = await ctx.modelRegistry.streamSimple(model, request, opts).result();
+		const text = (out.content as any[]).filter((b) => b.type === "text").map((b) => b.text).join("").trim();
+		if (text || reasoningUnsupported.has(key)) return out;
+		reasoningUnsupported.add(key);
+		return await ctx.modelRegistry.streamSimple(model, request, { signal: ctrl.signal }).result();
+	} finally {
+		clearTimeout(timer);
+		ctx.signal?.removeEventListener?.("abort", relay);
+	}
 }
 
 async function translateOnce(
@@ -291,33 +319,34 @@ async function translateOnce(
 	payload: string,
 	guards: { question: string; draft: string; spans: string[]; rejectNone: boolean; extraAllowed?: string; skipDiffers?: boolean; skipScript?: boolean },
 	reasoningUnsupported: Set<string>,
+	timedOut: { v: boolean },
 ): Promise<Attempt> {
 	try {
-		const out = await callTranslator(ctx, model, systemPrompt, payload, reasoningUnsupported);
-		if (out.stopReason === "error") return { kind: "fail" };
+		const out = await callTranslator(ctx, model, systemPrompt, payload, reasoningUnsupported, timedOut);
+		if (out.stopReason === "error") return { kind: "error", why: "transport" };
 		const raw = (out.content as any[])
 			.filter((b) => b.type === "text")
 			.map((b) => b.text)
 			.join("")
 			.trim();
-		if (!raw) return { kind: "fail" };
+		if (!raw) return { kind: "error", why: "transport" };
 		// exact match only: pseudo-NONE answers are translation attempts
 		// (spec §2), never passthrough.
 		if (!guards.rejectNone && raw === "NONE") return { kind: "none" };
 		const restored = unmaskProtected(raw, guards.spans);
-		if (!restored.ok) return { kind: "fail" }; // lost or duplicated ⟦n⟧
+		if (!restored.ok) return { kind: "reject", guard: "placeholders" }; // lost or duplicated ⟦n⟧
 		// Forced target: the allowed-script set can only be derived from
 		// QUESTION ∪ DRAFT, so a legitimately forced non-Latin target (e.g.
 		// /translator Japanese with a Latin question) could never pass. The
 		// leak-class guard is off in forced mode — deliberate, operator request.
-		if (!guards.skipScript && !scriptGuardOk(restored.text, guards.question, guards.draft, guards.extraAllowed ?? "")) return { kind: "fail" };
+		if (!guards.skipScript && !scriptGuardOk(restored.text, guards.question, guards.draft, guards.extraAllowed ?? "")) return { kind: "reject", guard: "script" };
 		// Terse drafts (prose under ~80 chars) translate disproportionally
 		// longer in inflecting targets; refusing correct output is worse.
-		if (proseOnly(guards.draft).length >= 80 && !lengthOk(restored.text, guards.draft)) return { kind: "fail" };
-		if (!guards.skipDiffers && !differsFromSource(restored.text, guards.draft)) return { kind: "fail" }; // untranslated/meta output
+		if (proseOnly(guards.draft).length >= 80 && !lengthOk(restored.text, guards.draft)) return { kind: "reject", guard: "length" };
+		if (!guards.skipDiffers && !differsFromSource(restored.text, guards.draft)) return { kind: "reject", guard: "overlap" }; // untranslated/meta output
 		return { kind: "text", text: restored.text };
 	} catch {
-		return { kind: "fail" };
+		return timedOut.v ? { kind: "error", why: "timeout" } : { kind: "error", why: "transport" };
 	}
 }
 
@@ -336,12 +365,18 @@ export default function (pi: ExtensionAPI) {
 	// transient failure degrade every other session on that model, forever.
 	const reasoningUnsupported = new Set<string>();
 	const chmoddedLogs = new Set<string>();
+	// working-language text of already-seen summaries, keyed by text digest
+	const summaryCache = new Map<string, string | null>();
 
 	const dbg = (msg: string) => {
 		if (process.env.PI_TRANSLATOR_DEBUG === "1" || settings?.debug) console.error(`[pi-translator] ${msg}`);
 	};
 	const notify = (ctx: any, msg: string) => {
+		// ctx.hasUI means a dialog-capable UI is available; in --print and dialog-less
+		// RPC modes a warning raised there vanishes entirely, and a silent fallback to
+		// the working language is exactly the failure nobody notices.
 		if (ctx.hasUI) ctx.ui.notify(`pi-translator: ${msg}`, "warning");
+		else console.error(`[pi-translator] WARNING: ${msg}`);
 		dbg(msg);
 	};
 	const logLine = (rec: Record<string, unknown>) => {
@@ -376,7 +411,8 @@ export default function (pi: ExtensionAPI) {
 			if (settings && (s.target ?? "auto") !== "off") enabled = true; // a configured block means intent
 			const target = process.env.PI_TRANSLATOR_TARGET ?? s.target ?? "auto";
 			if (target === "off") enabled = false;
-			else if (target !== "auto") forced = target;
+			else if (target !== "auto") forced = targetName(target);
+			if (forced && forced.toLowerCase() === workingName().toLowerCase()) forced = null; // forced→working = a paid echo of the draft
 			targetResolved = true;
 		}
 	}
@@ -386,6 +422,13 @@ export default function (pi: ExtensionAPI) {
 		return LANG_NAMES[w] ?? w;
 	};
 	const modelOverride = () => process.env.PI_TRANSLATOR_MODEL || settings?.model || null;
+
+	/** A delivery target is operator free text — "de", "German", "german". Name it
+	 *  the way the prompt needs instead of sending "translate the DRAFT into de". */
+	const targetName = (raw: string) => {
+		const t = String(raw ?? "").trim();
+		return TARGET_LOOKUP[t.toLowerCase()] ?? t;
+	};
 
 	// Translator defaults to the agent's own model; an env/settings override
 	// pins a different one (e.g. a clean, larger model behind a weak worker).
@@ -405,7 +448,7 @@ export default function (pi: ExtensionAPI) {
 		systemPrompt: string,
 		source: string,
 		guards: { question: string; draft: string; spans: string[]; rejectNone: boolean; extraAllowed?: string; skipDiffers?: boolean },
-		direction: "prompt" | "reply",
+		direction: "prompt" | "reply" | "summary",
 	): Promise<Attempt> {
 		const masked = maskProtected(source);
 		const payload =
@@ -413,13 +456,16 @@ export default function (pi: ExtensionAPI) {
 				? `QUESTION:\n${guards.question}\n\nDRAFT:\n${masked.masked}`
 				: `USER REQUEST:\n${masked.masked}`;
 		const t0 = Date.now();
-		let attempt = await translateOnce(ctx, translator.model, systemPrompt, payload, { ...guards, spans: masked.spans }, reasoningUnsupported);
-		if (attempt.kind === "fail") attempt = await translateOnce(ctx, translator.model, systemPrompt, payload, { ...guards, spans: masked.spans }, reasoningUnsupported);
+		const timedOut = { v: false };
+		let attempt = await translateOnce(ctx, translator.model, systemPrompt, payload, { ...guards, spans: masked.spans }, reasoningUnsupported, timedOut);
+		// retry only what could have been a fluke — see the Attempt comment
+		if (attempt.kind === "error" && attempt.why === "transport") attempt = await translateOnce(ctx, translator.model, systemPrompt, payload, { ...guards, spans: masked.spans }, reasoningUnsupported, timedOut);
 		logLine({
 			dir: direction,
 			model: translator.label,
 			ms: Date.now() - t0,
 			verdict: attempt.kind,
+			reason: attempt.kind === "reject" ? attempt.guard : attempt.kind === "error" ? attempt.why : undefined,
 			in: source,
 			out: attempt.kind === "text" ? attempt.text : undefined,
 		});
@@ -439,7 +485,8 @@ export default function (pi: ExtensionAPI) {
 				forced = null;
 			} else if (a !== "status" && raw) {
 				enabled = true;
-				forced = raw;
+				forced = targetName(raw);
+				if (forced && forced.toLowerCase() === workingName().toLowerCase()) forced = null; // see ensureSettings
 			}
 			const appends = Object.keys(settings?.promptAppend ?? {});
 			const translator = resolveTranslator(ctx);
@@ -514,14 +561,14 @@ export default function (pi: ExtensionAPI) {
 		// user's prompt carries a path or URL (review MAJOR).
 		const masked = maskProtected(JSON.stringify(strings));
 		const payload = `QUESTION:\n${lastUserPrompt}\n\nSEGMENTS:\n${masked.masked}`;
-		const guards = { question: lastUserPrompt, draft: strings.join("\n"), spans: masked.spans, rejectNone: false, extraAllowed: "a b c d e f g", skipDiffers: true, skipScript: !!forced };
+		const guards = { question: lastUserPrompt, draft: strings.join("\n"), spans: masked.spans, rejectNone: false, extraAllowed: workingName(), skipDiffers: true, skipScript: !!forced };
 		const t0 = Date.now();
 		// No retry here: for forms the English fallback IS the UX, and a
 		// wobbly endpoint would pay double latency on every form (review #4.3).
 		const attempt = await translateOnce(ctx, translator.model, systemPrompt, payload, guards, reasoningUnsupported);
 		logLine({ dir: "form", model: translator.label, ms: Date.now() - t0, verdict: attempt.kind, in: strings.join("\n"), out: attempt.kind === "text" ? attempt.text : undefined });
 		if (attempt.kind !== "text") {
-			if (attempt.kind === "fail") notify(ctx, "question-form translation failed — questions stay in the working language");
+			if (failed(attempt)) notify(ctx, "question-form translation failed — questions stay in the working language");
 			return undefined;
 		}
 		const translated = parseBatchReply(attempt.text, strings.length);
@@ -566,13 +613,13 @@ export default function (pi: ExtensionAPI) {
 			}
 			// Prompt translation is independent of the forced reply target: the
 			// model must read the working language whatever language we deliver in.
-			const attempt = await translateWithRetry(ctx, translator, buildPromptTranslatePrompt(workingName()), text, { question: text, draft: text, spans: [], rejectNone: false, extraAllowed: "a b c d e f g", skipDiffers: true }, "prompt");
+			const attempt = await translateWithRetry(ctx, translator, buildPromptTranslatePrompt(workingName()), text, { question: text, draft: text, spans: [], rejectNone: false, extraAllowed: workingName(), skipDiffers: true }, "prompt");
 			if (attempt.kind === "none") {
 				questionIsWorkingLang = true;
 				dbg("prompt: already working language → passthrough");
 				return;
 			}
-			if (attempt.kind === "fail") {
+			if (failed(attempt)) {
 				questionIsWorkingLang = false;
 				notify(ctx, "request translation failed — model sees your original text");
 				return;
@@ -615,8 +662,8 @@ export default function (pi: ExtensionAPI) {
 
 		const systemPrompt = buildSystemPrompt(workingName(), renderAppend(settings?.promptAppend), forced);
 		const attempt = await translateWithRetry(ctx, translator, systemPrompt, draft, { question: lastUserPrompt, draft, spans: [], rejectNone: !!forced, skipScript: !!forced }, "reply");
-		if (attempt.kind === "fail") {
-			notify(ctx, `translation failed or violated validation (${translator.label}) — delivering original answer`);
+		if (failed(attempt)) {
+			notify(ctx, `translation ${attempt.kind === "reject" ? `rejected by the ${attempt.guard} guard` : `failed (${attempt.why})`} (${translator.label}) — delivering original answer`);
 			return;
 		}
 		if (attempt.kind === "none") {
@@ -639,7 +686,7 @@ export default function (pi: ExtensionAPI) {
 	// F1: before every LLM call the model gets working-language originals —
 	// the transcript keeps the user-language deliveries. Runs regardless of
 	// `enabled`: the invariant belongs to the data, not the toggle.
-	pi.on("context", async (event: any) => {
+	pi.on("context", async (event: any, ctx: any) => {
 		let restored = 0;
 		let out = event.messages;
 		for (let i = 0; i < event.messages.length; i++) {
@@ -661,6 +708,34 @@ export default function (pi: ExtensionAPI) {
 			if (content === undefined) continue;
 			if (out === event.messages) out = [...event.messages]; // copy-on-write; never mutate the session objects
 			out[i] = { ...msg, content };
+			restored++;
+		}
+		// Compaction and branch summaries are the one text pi builds from the STORED
+		// (user-language) deliveries: the summarizer never runs through pi's
+		// transformContext, so the model's context would keep growing target-language
+		// text — the exact long-context regime this extension exists to keep out. Hand
+		// the model a working-language summary instead. Keyed by a text digest, not by
+		// object identity: pi hands handlers a clone of the messages every request, so
+		// identity would re-translate the same summary on every single call.
+		for (let i = 0; i < out.length; i++) {
+			const msg = out[i];
+			if (msg?.role !== "compactionSummary" && msg?.role !== "branchSummary") continue;
+			const src = typeof msg.summary === "string" ? msg.summary : "";
+			if (!src.trim()) continue;
+			const key = `${src.length}\u0000${src.slice(0, 60)}\u0000${src.slice(-40)}`;
+			let working = summaryCache.get(key);
+			if (working === undefined) {
+				const translator = resolveTranslator(ctx);
+				if (!translator) continue;
+				const attempt = await translateWithRetry(ctx, translator, buildPromptTranslatePrompt(workingName()), src, { question: src, draft: src, spans: [], rejectNone: false, extraAllowed: workingName(), skipDiffers: true }, "summary");
+				working = attempt.kind === "text" ? attempt.text : null;
+				if (summaryCache.size > 8) summaryCache.clear();
+				summaryCache.set(key, working);
+				dbg(working ? `summary → ${workingName()} for the model (${src.length} → ${working.length} chars)` : `summary kept as-is (${attempt.kind})`);
+			}
+			if (!working) continue;
+			if (out === event.messages) out = [...event.messages]; // copy-on-write; never mutate the session objects
+			out[i] = { ...msg, summary: working };
 			restored++;
 		}
 		if (restored > 0) dbg(`context: ${restored} message(s) restored to working language for the model`);

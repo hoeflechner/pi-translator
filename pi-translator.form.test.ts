@@ -49,6 +49,10 @@ async function main() {
 	factory(pi);
 
 	const calls: string[] = [];
+	const counts = { prompt: 0, reply: 0, form: 0 };
+	const DE_REPLY = { stopReason: "stop", content: [{ type: "text", text: "Kurz gesagt: Das Depot soll Dividenden verbuchen." }] };
+	let reply: any = DE_REPLY; // DRAFT-branch answer, per test
+	const EN_PROMPT = { stopReason: "stop", content: [{ type: "text", text: "Should the depot app book dividends in the future? Ask via form." }] };
 	const ctx: any = {
 		cwd: "/tmp/pt-formtest", // no settings file → block-free, quiet
 		hasUI: false,
@@ -61,9 +65,9 @@ async function main() {
 				result: async () => {
 					const payload = req.messages[0].content as string;
 					calls.push(payload.slice(0, 30));
-					if (payload.startsWith("USER REQUEST:")) return { stopReason: "stop", content: [{ type: "text", text: "Should the depot app book dividends in the future? Ask via form." }] };
-					if (payload.includes("SEGMENTS:")) return { stopReason: "stop", content: [{ type: "text", text: JSON.stringify(DE_BATCH) }] };
-					if (payload.includes("\nDRAFT:")) return { stopReason: "stop", content: [{ type: "text", text: "Kurz gesagt: Das Depot soll Dividenden verbuchen." }] };
+					if (payload.startsWith("USER REQUEST:")) { counts.prompt++; return EN_PROMPT; }
+					if (payload.includes("SEGMENTS:")) { counts.form++; return { stopReason: "stop", content: [{ type: "text", text: JSON.stringify(DE_BATCH) }] }; }
+					if (payload.includes("\nDRAFT:")) { counts.reply++; return reply; }
 					return { stopReason: "error", content: [] };
 				},
 			}),
@@ -148,6 +152,39 @@ async function main() {
 		const r = await handlers.message_end({ message: msg }, ctx);
 		assert.equal(r?.message?.content?.[0]?.text, "Kurz gesagt: Das Depot soll Dividenden verbuchen.", "answer after an injection is delivered translated");
 		assert.equal(r?.message?.piTranslator?.original, "Restating: the depot should book dividends.", "English draft kept as metadata");
+	});
+
+	await t("guard rejection is not retried; a transport error is retried once", async () => {
+		// Retrying a deterministic guard rejection with a byte-identical request can
+		// only reproduce it — it just doubles cost and latency on every turn.
+		const draft = "Restating: the depot should book dividends and record them as cash ledger entries.";
+		const msg = { role: "assistant", content: [{ type: "text", text: draft }] };
+		reply = { stopReason: "stop", content: [{ type: "text", text: draft }] }; // verbatim echo → overlap guard
+		const before = counts.reply;
+		const r = await handlers.message_end({ message: msg }, ctx);
+		assert.equal(counts.reply - before, 1, "one translator call, no identical retry");
+		assert.equal(r, undefined, "original answer delivered");
+		reply = { stopReason: "error", content: [] }; // the fluke class IS retried
+		const before2 = counts.reply;
+		await handlers.message_end({ message: msg }, ctx);
+		// 3, not 2: the first attempt is itself two calls (reasoning "minimal" rejected
+		// with empty content → probe marks the model, one call without the option).
+		assert.equal(counts.reply - before2, 3, "transport error gets its one retry (plus the reasoning probe)");
+		reply = DE_REPLY;
+	});
+
+	await t("compaction summary reaches the model in the working language", async () => {
+		// pi builds the summary from the STORED (user-language) deliveries and never
+		// runs the summarizer through transformContext — without this the model
+		// context grows target-language text exactly in the long-session regime.
+		const summary = { role: "compactionSummary", summary: "Der Nutzer wollte eine Depot-App, die Dividenden verbucht.", tokensBefore: 1234, timestamp: 1 };
+		const r = await handlers.context({ messages: [summary] }, ctx);
+		assert.ok(r?.messages, "summary rewritten for the model");
+		assert.equal(r.messages[0].summary, EN_PROMPT.content[0].text, "model sees the working-language summary");
+		assert.equal(summary.summary, "Der Nutzer wollte eine Depot-App, die Dividenden verbucht.", "session object NOT mutated (transcript keeps the user's language)");
+		const before = counts.prompt;
+		await handlers.context({ messages: [{ ...summary }] }, ctx); // pi hands a fresh clone every request
+		assert.equal(counts.prompt, before, "cached by text digest — not re-translated per request");
 	});
 
 	console.log(`pi-translator.form.test.ts: ${n} tests passed`);

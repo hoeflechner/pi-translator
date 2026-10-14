@@ -54,18 +54,23 @@ zero rewrites).
 
 Design properties:
 
-* **Zero language-specific code.** No detector, no word lists, no language
-  tables, no per-language prompts. The translator is shown the text and
-  simply told to translate it. Adding a language means nothing; your keyboard
-  decides.
+* **No language detection in code.** No detector, no word lists, no per-language
+  prompts: the translator is shown the text and simply told to translate it, and
+  `LANG_NAMES` only *spells* a language name for the prompt (and maps what you
+  typed as `target`/`/translator <language>`). Adding a language means nothing;
+  your keyboard decides.
 * **Nothing external.** Every translation is a local LLM call — no cloud
   machine-translation endpoints, ever.
-* **Deterministic safety.** Code fences, inline code, paths and URLs are
-  masked with `⟦n⟧` placeholders before translation and verified on restore;
-  every output passes a Unicode-script guard (catches the CJK-leak class
-  table-free), a length sanity check, and a word-overlap guard that refuses
-  untranslated echoes even between same-script languages. Failure → retry
-  once → deliver the original + warning. Never a silent empty bubble.
+* **Deterministic safety.** Code fences, inline code, paths (POSIX and
+  `C:\…`) and URLs are masked with `⟦n⟧` placeholders before translation and
+  verified on restore; every output passes a Unicode-script guard (catches the
+  CJK-leak class table-free), a length sanity check, and a word-overlap guard
+  that refuses untranslated echoes even between same-script languages. That
+  guard compares **prose**: the code it must keep byte-identical would otherwise
+  score as an echo and get correct answers of code-heavy replies rejected.
+  A refused or failed call delivers the original plus a warning — and only a
+  *transport* failure is retried, because re-sending a byte-identical request
+  after a deterministic guard rejection reproduces it and doubles the latency.
 * **Style is user config, not code.** Rules like "German answers must use
   informal *du*" are `promptAppend` entries — per-language labeled lines the
   translator applies itself.
@@ -75,6 +80,9 @@ Design properties:
   never touched, and the model still reads its English original through the
   `context` handler. Any structural doubt (lost or invented segment) → the
   English form is kept and you are warned — a shifted label never ships.
+  *pi 1.2.0 registers no `ask_user` tool (built-ins: bash/edit/find/grep/ls/
+  powershell/read/write), so on that host this path is inert and untested in
+  production; it engages wherever the tool exists.*
 * **Nothing is harvested or persisted** beyond the normal session transcript
   (plus your own optional debug log).
 
@@ -125,16 +133,21 @@ project block overrides it per key:
 ```
 
 > **`log` writes full plaintext.** Every record contains the complete input
-> and output of one translation — a bilingual transcript of your session.
-> The file is created `0600`, grows without bound, and never rotates. Point
-> it somewhere you actually want plaintext to live, or leave it off.
+> and output of one translation — a bilingual transcript of your session. One
+> record covers up to four provider calls (guard-free retry × the reasoning
+> probe) and `ms` is their sum. Permissions: the `0600` the code asks for is
+> **ignored on Windows** (measured: the file lands `0666`, inheriting the
+> directory's ACL) — put the path somewhere that ACL is the answer you want.
+> It grows without bound and never rotates. Leave it off unless you want a
+> bilingual transcript of everything you typed.
 
 ## Verified behavior
 
-25 unit tests + 5 async integration tests over the real extension factory
+25 unit tests + 9 async integration tests over the real extension factory
 with a mocked model (prompt construction, script guard, length guard,
-placeholder mask/restore, echo detection, multimodal block order, ask_user
-form round-trip incl. `context` restore — no LLM involved: no LLM involved:
+placeholder mask/restore, echo detection, retry policy, multimodal block
+order, ask_user form round-trip, compaction-summary rewrite incl. `context`
+restore — no LLM involved:
 `node --experimental-strip-types pi-translator.test.ts`) plus live
 echo-drills: German round-trips with the model demonstrably reading English
 (`context` restores logged across session resumes), English passthrough via
@@ -146,6 +159,16 @@ word-overlap guard.
 ## Known limits
 
 * Streaming shows the working-language draft, then the replacement.
+* **Compaction summaries are translated, not prevented.** pi builds a summary
+  from the *stored* (your-language) deliveries and never runs the summarizer
+  through the `context` handler, so the model would keep reading your language
+  in long sessions — the regime this extension exists for. The `context` handler
+  therefore hands the model a working-language copy of every `compactionSummary`
+  / `branchSummary`, translated once and cached by text digest (pi clones the
+  messages per request, so identity caching would re-translate forever). Cost:
+  one extra translator call for the first request after each compaction.
+* One translator call gets 25 s. `ctx.signal` alone is not a deadline — it is
+  pi's run-abort signal and is undefined whenever the agent is not streaming.
 * Every turn pays one cheap translation call (the request `NONE`-check);
   non-English turns pay two (request + answer). An English chat is one tiny
   call and no rewrites.

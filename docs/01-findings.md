@@ -143,3 +143,58 @@ prompt, not by whatever 200k tokens the agent has accumulated.
 - Instruction dilution is real: static AGENTS.md rules lose to recent
   context. The tail exploits the inverse: its style rules live in a prompt
   that is *always recent*.
+
+## 8. Live audit-log measurements (2026-10-24, 143 calls, one shared jsonl)
+
+Source: `logLine` output (`dir`/`model`/`ms`/`verdict`), the 0600 audit log.
+The `model` field is the *translator* label, and `resolveTranslator()`
+defaults to the current agent model — so a row's model is also the worker
+that produced the draft. Rows from other sessions writing to the same file
+are separated by that label.
+
+**Cost per direction:**
+
+| worker / translator | dir | n | median | p90 | total |
+|---|---|---|---|---|---|
+| `sharc/qwen3.8-flash-next` | prompt | 84 | 4.5 s | 25.6 s | 13.9 min |
+| `sharc/qwen3.8-flash-next` | reply | 45 | 4.8 s | 72.1 s | 17.4 min |
+| `local/smart` | prompt | 14 | 3.1 s | 8.1 s | 1.2 min |
+| `local/smart` | reply | 5 | **92.8 s** | — | 5.9 min |
+
+- **45 % of prompt translations returned `NONE`** (45/98) — the user had
+  written the working language and the whole pre-start round trip bought
+  nothing. 4.6 of the 38.4 total translator minutes were spent on `NONE`
+  verdicts. 3 prompt calls failed outright (text then passed through
+  untranslated).
+
+**The working-language mandate does not hold on the weak model.** Rebuilt
+per turn from the log (a turn's question language = the verdict of its
+prompt call; a reply verdict of `NONE` on a foreign-language question means
+the draft was already in the user's language and was therefore delivered
+**unpolished**):
+
+| worker | answers to foreign-language questions | translated | **drafted in the user's language** |
+|---|---|---|---|
+| `sharc/qwen3.8-flash-next` | 38 | 17 | **21 (55 %)** |
+| `local/smart` | 5 | 5 | **0 (0 %)** |
+
+Caveat that keeps this an upper bound: `NONE` is the *translator's* verdict,
+and the translator is the same weak model. A `NONE` is either a genuine
+worker breach of the guideline or a misjudgement of an English draft — they
+are indistinguishable until the translator is not the degraded worker. Either
+reading gives the same conclusion: over half of the German answers in that
+population never passed the polish layer.
+
+**Translator-model probe through the serving proxy** (realistic 700-char
+draft, translate-to-German instruction, 2026-10-24):
+
+| model | latency | output |
+|---|---|---|
+| `fast` | 2.0–2.7 s | clean German, 0 CJK chars, 75 words vs 71 source, faithful |
+| `smart` | **16.1 s** | **empty content** — the known reasoning-budget overflow |
+
+`smart` is therefore not a viable translator pin despite being the cleanest
+German model this deployment owns; `fast` is fast and clean but its long-run
+German quality is unmeasured. A `thinking:{type:"disabled"}`-style override
+was rejected by the endpoint (HTTP 400), so reasoning cannot be switched off
+per call from this client.

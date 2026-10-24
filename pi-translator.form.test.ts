@@ -272,6 +272,16 @@ async function main() {
 			assert.match(delivered, /`pi-web-sessiond`/, "the protected span is back — the repair shipped, not the raw draft");
 			const rows = readFileSync(log, "utf-8").trim().split("\n").map((l) => JSON.parse(l));
 			assert.ok(rows.some((x) => x.placeholder_repair === true), "the audit row says a repair was attempted");
+			// And when even the repair fails, the operator must be able to see WHY
+			// from the log — "rejected by the placeholders guard" alone is no clue.
+			reply = { stopReason: "stop", content: [{ type: "text", text: "German\nDer Daemon besitzt den Socket — zuerst starten." }] };
+			const stubborn = await handlers.message_end({ message: { role: "assistant", content: [{ type: "text", text: draft }] } }, ctx);
+			assert.equal(stubborn, undefined, "the raw draft ships after the repair failed too");
+			const dead = readFileSync(log, "utf-8").trim().split("\n").map((l) => JSON.parse(l)).filter((x) => x.verdict === "reject").pop();
+			assert.deepEqual(dead.placeholders_missing, [0], "the row names the marker that was lost");
+			assert.deepEqual(dead.placeholders_dups, []);
+			assert.equal(dead.placeholder_repair, true, "and that a repair was attempted before giving up");
+			reply = saved;
 		} finally {
 			reply = saved;
 			delete process.env.PI_TRANSLATOR_LOG;

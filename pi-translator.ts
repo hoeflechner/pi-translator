@@ -359,7 +359,7 @@ export function replaceText(content: any[], text: string): any[] {
  *  the model returns a language-name line before the answer. */
 type Guards = { question: string; draft: string; spans: string[]; rejectNone: boolean; extraAllowed?: string; skipDiffers?: boolean; skipScript?: boolean; header?: boolean };
 
-type Attempt = { kind: "none" } | { kind: "text"; text: string; lang?: string } | { kind: "error"; why: "transport" | "timeout" } | { kind: "reject"; guard: string; hint?: string };
+type Attempt = { kind: "none" } | { kind: "text"; text: string; lang?: string } | { kind: "error"; why: "transport" | "timeout" } | { kind: "reject"; guard: string; hint?: string; missing?: number[]; dups?: number[] };
 
 /** Anything but a usable translation or an explicit NONE. */
 const failed = (a: Attempt) => a.kind === "error" || a.kind === "reject";
@@ -454,6 +454,8 @@ async function translateOnce(
 			return {
 				kind: "reject",
 				guard: "placeholders",
+				missing: restored.missing,
+				dups: restored.dups,
 				hint: `Your previous answer broke the placeholders. The DRAFT contains ${guards.spans.length} of them, ⟦0⟧…⟦${last}⟧, and your answer must contain EACH exactly once. Missing from your answer: ${named(restored.missing)}. Used more than once: ${named(restored.dups)}. Redo the answer and keep every placeholder in place.`,
 			};
 		}
@@ -613,6 +615,9 @@ export default function (pi: ExtensionAPI) {
 			verdict: attempt.kind,
 			reason: attempt.kind === "reject" ? attempt.guard : attempt.kind === "error" ? attempt.why : undefined,
 			...(placeholderRepair ? { placeholder_repair: true } : {}),
+			// The operator sees "rejected by the placeholders guard" and nothing else —
+			// which marker was lost is the actual diagnostic, so it belongs in the row.
+			...(attempt.kind === "reject" && attempt.guard === "placeholders" ? { placeholders_missing: attempt.missing, placeholders_dups: attempt.dups } : {}),
 			in: source,
 			out: attempt.kind === "text" ? attempt.text : undefined,
 			// Formulate-mode metrics the falsification gate needs and nothing else

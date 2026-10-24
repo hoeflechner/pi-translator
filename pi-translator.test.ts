@@ -3,7 +3,7 @@
  * runtime. Run: node --experimental-strip-types pi-translator.test.ts
  */
 import assert from "node:assert/strict";
-import { proseOnly, scriptsOf, scriptGuardOk, lengthOk, renderAppend, buildSystemPrompt, buildPromptTranslatePrompt, workingGuideline, maskProtected, unmaskProtected, differsFromSource, replaceText, collectUiStrings, applyUiStrings, parseBatchReply, buildBatchTranslatePrompt, buildDetectPrompt, parseLanguageName, nextUserLang, canonicalLangName, STICKY_WORD_FLOOR } from "./pi-translator.ts";
+import { proseOnly, scriptsOf, scriptGuardOk, lengthOk, renderAppend, buildPromptTranslatePrompt, workingGuideline, maskProtected, unmaskProtected, differsFromSource, replaceText, collectUiStrings, applyUiStrings, parseBatchReply, buildBatchTranslatePrompt, buildFormulatePrompt, parseLanguageName, canonicalLangName, splitLanguageHeader, normText, ratioOf } from "./pi-translator.ts";
 
 let n = 0;
 const t = (name: string, fn: () => void) => {
@@ -96,23 +96,28 @@ t("renderAppend empty → empty string (no dangling header)", () => {
 	assert.equal(renderAppend({ de: "  " }), "");
 });
 
-/* buildSystemPrompt (§3 template + forced swap) */
-t("auto template contains the NONE contract", () => {
-	const s = buildSystemPrompt("English", "", null);
-	assert.ok(s.includes("reply with exactly: NONE"));
-	assert.ok(s.includes("into the language of the QUESTION"));
-	assert.ok(!s.includes("Always translate"), "auto mode must not force a target");
+/* F4 (docs/06): one always-on formulation call replaces detect + translate + gate */
+t("formulate prompt: infer target from the QUESTION, or take an explicit one", () => {
+	const auto = buildFormulatePrompt("English", "", null);
+	assert.ok(/language the QUESTION is written in/i.test(auto), "auto mode infers the target");
+	const fixed = buildFormulatePrompt("English", "", "Deutsch");
+	assert.ok(/Write the final answer in Deutsch\./.test(fixed), "an explicit target (forced or remembered) is stated, not inferred");
+	assert.ok(!/language the QUESTION is written in/i.test(fixed), "and the inference line is gone, not both");
 });
 
-t("forced template swaps detection for a fixed target, drops NONE", () => {
-	const s = buildSystemPrompt("English", "", "German");
-	assert.ok(s.includes("Always translate the DRAFT into German."));
-	assert.ok(!s.includes("NONE"), "forced mode has no passthrough (§3)");
+t("formulate prompt: re-derive, invent nothing, header, no monologue", () => {
+	const p = buildFormulatePrompt("English", "", null);
+	assert.ok(/Re-derive/i.test(p) && /content/i.test(p), "must ask for re-derivation, not copying");
+	assert.ok(/Add nothing that is not in the DRAFT/i.test(p), "the only defence against manufactured filler (docs/06 R6)");
+	assert.ok(/First line: the name of the language/i.test(p), "must ask for the header line");
+	assert.ok(/no comments about translating/i.test(p), "must close the Latin↔Latin meta-commentary hole the differsFromSource skip opens");
+	assert.ok(/byte-identical/i.test(p) && /\[n\]|placeholder/i.test(p), "masking contract still stated");
 });
 
-t("append is appended to the shipped prompt", () => {
-	const s = buildSystemPrompt("English", renderAppend({ de: "Use du." }), null);
-	assert.ok(s.trimEnd().endsWith("[de] Use du."));
+t("promptAppend reaches the shipped formulate prompt", () => {
+	const p = buildFormulatePrompt("English", "\nStyle rules from the user:\nUse du.", null);
+	assert.ok(p.includes("Use du."), "user style rules are appended verbatim");
+	assert.ok(p.indexOf("Style rules") > p.indexOf("First line"), "appended after the contract, not replacing it");
 });
 
 /* worker-side system-prompt guideline (thinking + drafting language) */
@@ -304,47 +309,59 @@ const machine = (a: any) =>
 	}
 });
 
-/* ---------- F3 (docs/06): language detection replaces prompt translation ---------- */
+/* ---------- F4 (docs/06): always-on formulation, header carries the language ---------- */
 
 t("workingGuideline no longer promises a translated input", () => {
-	const s = workingGuideline("English");
-	assert.ok(!/translated into English before you read/i.test(s), "prompt translation is gone — the guideline must not lie about it");
-	assert.ok(/untranslated/i.test(s), "must state that the user text arrives as written");
-	assert.ok(/translation layer on delivery/i.test(s), "delivery translation stays");
+	const g = workingGuideline("English");
+	assert.ok(!/translated into English before you read/i.test(g), "prompt translation is gone — the guideline must not lie about it");
+	assert.ok(/untranslated/i.test(g), "must state the user text arrives as written");
+	assert.ok(/translation layer on delivery/i.test(g), "delivery formulation stays");
 });
 
-t("buildDetectPrompt asks for a name, NONE and CODE", () => {
-	const s = buildDetectPrompt("English");
-	assert.ok(/English/.test(s) && /NONE/.test(s) && /CODE/.test(s), "three answer classes");
-	assert.ok(/never answer or translate/i.test(s), "must forbid answering the request");
-});
-
-t("parseLanguageName maps the detector answer", () => {
-	assert.deepEqual(parseLanguageName("NONE", "English"), { kind: "working" }, "NONE = working language");
+t("parseLanguageName accepts only a name", () => {
+	assert.deepEqual(parseLanguageName("NONE", "English"), { kind: "working" });
 	assert.deepEqual(parseLanguageName("German", "English"), { kind: "lang", name: "German" });
-	assert.deepEqual(parseLanguageName("german.", "English"), { kind: "lang", name: "German" }, "trailing dot + case");
+	assert.deepEqual(parseLanguageName("german.", "English"), { kind: "lang", name: "German" }, "case + trailing dot");
+	assert.deepEqual(parseLanguageName("de", "English"), { kind: "lang", name: "German" }, "operator code table shared");
 	assert.deepEqual(parseLanguageName("German", "german"), { kind: "working" }, "naming the working language is working");
-	assert.deepEqual(parseLanguageName("de", "English"), { kind: "lang", name: "German" }, "code answer canonicalised");
-	assert.deepEqual(parseLanguageName("CODE", "English"), { kind: "code" }, "bare command carries no language");
-	assert.deepEqual(parseLanguageName("This is German and it looks fine", "English"), { kind: "fail" }, "a chatty answer is a model that started talking, not a language");
+	assert.deepEqual(parseLanguageName("This is German, obviously", "English"), { kind: "fail" }, "a chatty answer is not a name");
 	assert.deepEqual(parseLanguageName("", "English"), { kind: "fail" });
-	assert.deepEqual(parseLanguageName("???", "English"), { kind: "fail" }, "no name-shaped answer");
 });
 
-t("nextUserLang keeps a short input from flipping the session", () => {
-	assert.equal(nextUserLang("German", "English", 2, null), "German", '"ok?" must not switch a German session');
-	assert.equal(nextUserLang("German", "English", 12, null), "English", "a long English turn does switch");
-	assert.equal(nextUserLang(null, "German", 3, null), "German", "first turn is taken even when short");
-	assert.equal(nextUserLang("German", null, 30, null), "German", "no evidence (fail/CODE) keeps the last known");
-	assert.equal(nextUserLang(null, null, 30, null), null, "still unknown stays unknown (never assumed working)");
-	assert.equal(nextUserLang("German", "English", 3, "Français"), "Français", "/translator French wins over everything");
-	assert.ok(STICKY_WORD_FLOOR >= 2 && STICKY_WORD_FLOOR <= 12, "sticky floor is a sane word count");
+t("splitLanguageHeader never loses the answer", () => {
+	assert.deepEqual(splitLanguageHeader("German\nHallo zusammen."), { lang: "German", text: "Hallo zusammen." });
+	const noHeader = splitLanguageHeader("Hallo zusammen, hier die Antwort.");
+	assert.equal(noHeader.lang, null);
+	assert.equal(noHeader.text, "Hallo zusammen, hier die Antwort.", "a model that skipped the header keeps its answer");
+	const headerIsText = splitLanguageHeader("Here is the translation:\nHallo.");
+	assert.equal(headerIsText.lang, null);
+	assert.equal(headerIsText.text, "Here is the translation:\nHallo.", "an unparseable first line is treated as content, not swallowed (R2)");
+	assert.deepEqual(splitLanguageHeader("German"), { lang: null, text: "German" }, "a bare name with no body is content, and the caller rejects empty");
 });
 
-t("canonicalLangName shares the operator table", () => {
-	assert.equal(canonicalLangName("de"), "German");
-	assert.equal(canonicalLangName("GERMAN"), "German");
-	assert.equal(canonicalLangName("Klingon"), "Klingon", "unknown names pass through verbatim");
+t("the header line never survives into the delivered text", () => {
+	const { lang, text } = splitLanguageHeader("German\nDas Depot ist sauber.");
+	assert.equal(lang, "German");
+	assert.ok(!/\bGerman\b/.test(text), "no language-name line in what the user reads");
+});
+
+t("noop detection is normalised equality, not a similarity threshold", () => {
+	assert.equal(normText("  Das\nist\tgut. "), normText("Das ist gut."));
+	assert.notEqual(normText("Das ist gut."), normText("Das ist gut!"), "one edit is not a noop — a % threshold would reject light reformulation");
+});
+
+t("ratioOf reports prose growth for the invented-filler metric", () => {
+	assert.equal(ratioOf("Der Satz ist kurz.", "Der Satz ist kurz."), 1, "unchanged prose ratios 1.0");
+	assert.ok(ratioOf("Der Satz ist kurz und wird hier lang und lang.", "Der Satz ist kurz.") > 1.5, "padding shows up as growth (R7 M5)");
+	assert.ok(ratioOf("", "Der Satz ist kurz.") < 0.1, "empty output ratios near zero, so the floor guard bites");
+});
+
+t("lengthOk ceiling is a parameter: formulation gets room, truncation never does", () => {
+	const draft = "x".repeat(200);
+	assert.ok(lengthOk("y".repeat(300), draft, 4), "a 1.5× reformulation passes in formulate mode");
+	assert.ok(lengthOk("y".repeat(700), draft, 4), "up to the 4× cap");
+	assert.ok(!lengthOk("y".repeat(900), draft, 4), "beyond the cap is refused — the ceiling is never deleted (R6)");
+	assert.ok(!lengthOk("y".repeat(40), draft, 4), "a 0.2× truncation fails the floor in any mode");
 });
 
 console.log(`pi-translator.test.ts: ${n} tests passed`);

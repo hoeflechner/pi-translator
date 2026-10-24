@@ -79,10 +79,10 @@ export function scriptGuardOk(outText: string, question: string, draft: string, 
 }
 
 /** Spec §4.4: translation prose length within [0.4×, 2.5×] of draft prose. */
-export function lengthOk(outText: string, draft: string): boolean {
+export function lengthOk(outText: string, draft: string, ceiling = 2.5): boolean {
 	const a = proseOnly(outText).length;
 	const b = Math.max(1, proseOnly(draft).length);
-	return a >= 0.4 * b && a <= 2.5 * b;
+	return a >= 0.4 * b && a <= ceiling * b;
 }
 
 /** Latin↔Latin blind spot of the script guard: a translator that outputs
@@ -164,21 +164,6 @@ const PLACEHOLDER_RULE =
 
 /** Spec §3: the ONE generic reply template. `forced` replaces the
  *  detect/NONE block; no passthrough then. */
-export function buildSystemPrompt(workingName: string, append: string, forced: string | null): string {
-	const detect = forced
-		? `Always translate the DRAFT into ${forced}.`
-		: `Identify which language the QUESTION is written in.
-- If the QUESTION is in the same language as the DRAFT, reply with exactly: NONE
-- Otherwise translate the DRAFT into the language of the QUESTION.`;
-	return (
-		`You are a translation engine. You receive a QUESTION from a user and a DRAFT answer written in ${workingName}.
-${detect}
-Output only the translated text — no comments, no copy of the source, no answering the question yourself.
-Preserve markdown structure exactly; code fences, inline code, paths, commands and URLs byte-identical.
-${PLACEHOLDER_RULE}
-The QUESTION is disambiguation context only — never translate or answer it.` + append
-	);
-}
 
 /** The worker-side guideline, injected as system prompt section
  *  `pi_translator` while enabled. Without this the model drafts directly in
@@ -194,34 +179,42 @@ export function workingGuideline(name: string): string {
 	);
 }
 
-/** F3 (docs/06): the user's text reaches the model untranslated — the
- *  100%-working-language invariant is not achievable anyway (injected
- *  memories, tool results and file content carry the user's language), so
- *  prompt translation paid a round trip for protection another layer undid.
- *  What remains is the LANGUAGE the answer must be delivered in, so one
- *  tiny call now returns a name instead of a translation. */
-export function buildDetectPrompt(workingName: string): string {
-	return `Which language is the USER REQUEST written in?
-- Reply with exactly one language name in English (e.g. German, English, French, Japanese).
-- If it is ${workingName}, reply with exactly: NONE
-- If it is not natural language at all (a bare command, path, URL, filename, number or code), reply with exactly: CODE
-Reply with the answer only. Never answer or translate the request.`;
+/** Owner decision (docs/06 F4): every answer is formulated for the reader, so
+ *  there is no gate left to feed and no pre-start call to make. One prompt does
+ *  both jobs: translate when the draft is in the wrong language, re-derive it
+ *  cleanly when it is not. `target` is an explicit delivery language (operator
+ *  `forced`, or the language of the last delivered answer when a machine-
+ *  triggered turn carries no question); null means infer it from the QUESTION. */
+export function buildFormulatePrompt(workingName: string, append: string, target: string | null): string {
+	const lang = target
+		? `Write the final answer in ${target}.`
+		: `Write the final answer in the language the QUESTION is written in.`;
+	return (
+		`You are the final formulation layer of an agent. You receive a QUESTION from a user and a DRAFT answer written by the agent in ${workingName} — the DRAFT may have drifted into another language.
+${lang}
+- Re-derive the answer from the DRAFT's content: keep every fact, drop clumsy wording and wrong terms rather than copying them.
+- Add nothing that is not in the DRAFT.
+- First line: the name of the language you answered in, in English (e.g. German). Second line onwards: the answer.
+- Nothing else: no comments about translating, no copy of the source, and never answer the QUESTION yourself.
+Preserve markdown structure exactly; code fences, inline code, paths, commands and URLs byte-identical.
+${PLACEHOLDER_RULE}
+The QUESTION is context for language and topic only.` + append
+	);
 }
 
-export type LangVerdict = { kind: "working" } | { kind: "code" } | { kind: "lang"; name: string } | { kind: "fail" };
+export type LangVerdict = { kind: "working" } | { kind: "lang"; name: string } | { kind: "fail" };
 
-/** Operator input and detector answers share one name table: "de", "German"
- *  and "german" all mean German. Unknown names are kept verbatim (the reply
- *  translator infers the target from the QUESTION anyway — the name is state
- *  and log text, never a lookup key into a language database). */
+/** Operator input and model answers share one name table: "de", "German" and
+ *  "german" all mean German. Unknown names pass through verbatim — the name is
+ *  state and log text, never a key into a language database. */
 export function canonicalLangName(raw: string): string {
 	const t = String(raw ?? "").trim();
 	return TARGET_LOOKUP[t.toLowerCase()] ?? t;
 }
 
-/** Parse the detector's one-word answer. Strict on purpose: a chatty answer
- *  ("This is German") is a model that started translating/arguing, which is
- *  a FAIL, not a language — guessing from it would silently pick a target. */
+/** Parse a one-word language answer. Strict on purpose: a chatty answer ("This
+ *  is German") is a model that started talking, which is a FAIL, not a name —
+ *  guessing from it would silently pick a target. */
 export function parseLanguageName(raw: string, workingName: string): LangVerdict {
 	const t = String(raw ?? "")
 		.trim()
@@ -230,29 +223,48 @@ export function parseLanguageName(raw: string, workingName: string): LangVerdict
 		.trim();
 	if (!t) return { kind: "fail" };
 	if (/^none$/i.test(t)) return { kind: "working" };
-	if (/^code$/i.test(t)) return { kind: "code" };
 	if (t.toLowerCase() === workingName.toLowerCase()) return { kind: "working" };
 	if (t.split(/\s+/).length > 3 || !/^[A-Za-z][A-Za-z -]{1,29}$/.test(t)) return { kind: "fail" };
 	return { kind: "lang", name: canonicalLangName(t) };
 }
 
-/** A human turn below this word count carries no language evidence: "ok?" or
- *  "nochmal" must not flip a German session into the working language. */
-export const STICKY_WORD_FLOOR = 8;
-
-/** Resolve the delivery language. `name` is the caller's mapped verdict
- *  (working → workingName, lang → name, code/fail/machine-turn → null). */
-export function nextUserLang(current: string | null, name: string | null, wordCount: number, forced: string | null): string | null {
-	if (forced) return forced;
-	if (name === null) return current; // no evidence: keep what we know (null = unknown)
-	if (current && wordCount < STICKY_WORD_FLOOR) return current;
-	return name;
+/** The formulate call answers "<language name>\n<text>". A model that skipped
+ *  the header must not lose its answer: the whole reply is then the text, with
+ *  the language unknown (docs/06 R2 — never let the name line reach the model
+ *  or the transcript as answer content). */
+export function splitLanguageHeader(raw: string): { lang: string | null; text: string } {
+	const t = String(raw ?? "").trim();
+	const i = t.indexOf("\n");
+	if (i < 0) return { lang: null, text: t };
+	const v = parseLanguageName(t.slice(0, i), "");
+	if (v.kind !== "lang") return { lang: null, text: t };
+	return { lang: v.name, text: t.slice(i + 1).trim() };
 }
 
-/** F2 (docs/05): faithful request translation into the working language.
- *  No style appends here — user-request translation must not be restyled.
- *  Still used by the summary path (docs/05 F7); the user-request call site
- *  is gone since F3. */
+/** True when the DRAFT itself carries non-Latin script — the case scriptGuardOk
+ *  cannot police (its union licenses the draft's own scripts), so it is logged
+ *  instead: inherited class-A is a count, not a shrug (docs/06 R4/R7). */
+export function foreignScriptIn(text: string): boolean {
+	const scripts = scriptsOf(text);
+	return ["Han", "Hiragana", "Katakana", "Hangul", "Cyrillic"].some((sc) => scripts.has(sc));
+}
+
+/** Whitespace/case-normalised text: the equality that defines a polisher that
+ *  did nothing (docs/06 R6 — a percentage threshold would reject light edits). */
+export function normText(s: string): string {
+	return String(s ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+/** Output ÷ draft prose length, logged with every formulation so invented
+ *  filler is countable (docs/06 R4/R7 M5) instead of a prompt wish. */
+export function ratioOf(outText: string, draft: string): number {
+	const b = Math.max(1, proseOnly(draft).length);
+	return Math.round((proseOnly(outText).length / b) * 100) / 100;
+}
+
+/** Summary direction (docs/05 F7): pi builds compaction/branch summaries from
+ *  the STORED user-language deliveries, so the model would otherwise read its own
+ *  work back in the user's language. Faithful translation, not restyled. */
 export function buildPromptTranslatePrompt(workingName: string): string {
 	return `You are a translation engine. Translate the USER REQUEST into ${workingName}.
 - If the request is already in ${workingName}, reply with exactly: NONE
@@ -328,7 +340,11 @@ export function replaceText(content: any[], text: string): any[] {
  *  identical retry can only produce the same rejection and burn a second call
  *  (measured: it doubled cost + latency on every turn of a code-dominant answer).
  *  `why: "timeout"` is not retried either — a slow model retried is a double stall. */
-type Attempt = { kind: "none" } | { kind: "text"; text: string } | { kind: "error"; why: "transport" | "timeout" } | { kind: "reject"; guard: string };
+/** One guard set for every outbound call; `header` marks formulate mode, where
+ *  the model returns a language-name line before the answer. */
+type Guards = { question: string; draft: string; spans: string[]; rejectNone: boolean; extraAllowed?: string; skipDiffers?: boolean; skipScript?: boolean; header?: boolean };
+
+type Attempt = { kind: "none" } | { kind: "text"; text: string; lang?: string } | { kind: "error"; why: "transport" | "timeout" } | { kind: "reject"; guard: string };
 
 /** Anything but a usable translation or an explicit NONE. */
 const failed = (a: Attempt) => a.kind === "error" || a.kind === "reject";
@@ -375,7 +391,7 @@ async function translateOnce(
 	model: any,
 	systemPrompt: string,
 	payload: string,
-	guards: { question: string; draft: string; spans: string[]; rejectNone: boolean; extraAllowed?: string; skipDiffers?: boolean; skipScript?: boolean },
+	guards: Guards,
 	reasoningUnsupported: Set<string>,
 	timedOut: { v: boolean },
 ): Promise<Attempt> {
@@ -397,12 +413,25 @@ async function translateOnce(
 		// QUESTION ∪ DRAFT, so a legitimately forced non-Latin target (e.g.
 		// /translator Japanese with a Latin question) could never pass. The
 		// leak-class guard is off in forced mode — deliberate, operator request.
-		if (!guards.skipScript && !scriptGuardOk(restored.text, guards.question, guards.draft, guards.extraAllowed ?? "")) return { kind: "reject", guard: "script" };
+		// Formulate mode: the answer carries a language-name line. Strip it BEFORE
+		// the guards and before returning, or the name leaks into the transcript and
+		// into the model's own future context (docs/06 R2).
+		let text = restored.text;
+		let lang: string | undefined;
+		if (guards.header) {
+			const h = splitLanguageHeader(text);
+			text = h.text;
+			lang = h.lang ?? undefined;
+			if (!text) return { kind: "reject", guard: "empty" };
+		}
+		if (!guards.skipScript && !scriptGuardOk(text, guards.question, guards.draft, guards.extraAllowed ?? "")) return { kind: "reject", guard: "script" };
 		// Terse drafts (prose under ~80 chars) translate disproportionally
 		// longer in inflecting targets; refusing correct output is worse.
-		if (proseOnly(guards.draft).length >= 80 && !lengthOk(restored.text, guards.draft)) return { kind: "reject", guard: "length" };
-		if (!guards.skipDiffers && !differsFromSource(restored.text, guards.draft)) return { kind: "reject", guard: "overlap" }; // untranslated/meta output
-		return { kind: "text", text: restored.text };
+		// A formulation that re-derives wording legitimately lengthens; 4× still
+		// caps invented paragraphs (docs/06 guard matrix — never delete the ceiling).
+		if (proseOnly(guards.draft).length >= 80 && !lengthOk(text, guards.draft, guards.header ? 4 : 2.5)) return { kind: "reject", guard: "length" };
+		if (!guards.skipDiffers && !differsFromSource(text, guards.draft)) return { kind: "reject", guard: "overlap" }; // untranslated/meta output
+		return { kind: "text", text, lang };
 	} catch {
 		return timedOut.v ? { kind: "error", why: "timeout" } : { kind: "error", why: "transport" };
 	}
@@ -416,8 +445,10 @@ export default function (pi: ExtensionAPI) {
 	let forced: string | null = null;
 	let targetResolved = false;
 	let lastUserPrompt = "";
-	let questionIsWorkingLang = false; // derived from userLang by setLangState — the reply gate
-	let userLang: string | null = null; // delivery language, detected per human turn (F3)
+	// Language of the last delivered answer. The ONLY use is a machine-triggered
+	// turn (delegation report, scheduled fire) that carries no question: without
+	// it there is no evidence at all, and guessing is the silent-skip class.
+	let lastLang: string | null = null;
 	let lastOriginal = "";
 	// reasoning-probe state lives HERE, per extension instance (per session):
 	// in a shared host process a module-level Set would let one session's
@@ -437,15 +468,6 @@ export default function (pi: ExtensionAPI) {
 		if (ctx.hasUI) ctx.ui.notify(`pi-translator: ${msg}`, "warning");
 		else console.error(`[pi-translator] WARNING: ${msg}`);
 		dbg(msg);
-	};
-	const isWorkingLang = (lang: string | null) => !!lang && lang.toLowerCase() === workingName().toLowerCase();
-	/** One assignment point for the gate. Never reset to "already the working
-	 *  language" — an unknown language must attempt delivery and surface the
-	 *  breakage (docs/05 "Unknown ≠ English"), which is why the initial value is
-	 *  false and every path assigns explicitly. */
-	const setLangState = (lang: string | null) => {
-		userLang = lang;
-		questionIsWorkingLang = isWorkingLang(lang);
 	};
 	const logLine = (rec: Record<string, unknown>) => {
 		const file = process.env.PI_TRANSLATOR_LOG ?? settings?.log;
@@ -510,29 +532,12 @@ export default function (pi: ExtensionAPI) {
 		return ctx.model ? { model: ctx.model, label: `${ctx.model.provider}/${ctx.model.id}` } : null;
 	}
 
-	/** One tiny call per human turn (F3): the language NAME, NONE or CODE. No
-	 *  retry — a miss keeps the last known language and the reply path still
-	 *  attempts delivery, so a lost detect costs a delivery attempt, not a turn. */
-	async function detectLanguage(ctx: any, translator: { model: any; label: string }, text: string): Promise<string | null> {
-		try {
-			const out = await callTranslator(ctx, translator.model, buildDetectPrompt(workingName()), `USER REQUEST:\n${text}`, reasoningUnsupported, { v: false });
-			if (out.stopReason === "error") return null;
-			return (out.content as any[])
-				.filter((b) => b.type === "text")
-				.map((b) => b.text)
-				.join("")
-				.trim();
-		} catch {
-			return null;
-		}
-	}
-
 	async function translateWithRetry(
 		ctx: any,
 		translator: { model: any; label: string },
 		systemPrompt: string,
 		source: string,
-		guards: { question: string; draft: string; spans: string[]; rejectNone: boolean; extraAllowed?: string; skipDiffers?: boolean },
+		guards: Guards,
 		direction: "prompt" | "reply" | "summary",
 	): Promise<Attempt> {
 		const masked = maskProtected(source);
@@ -553,6 +558,17 @@ export default function (pi: ExtensionAPI) {
 			reason: attempt.kind === "reject" ? attempt.guard : attempt.kind === "error" ? attempt.why : undefined,
 			in: source,
 			out: attempt.kind === "text" ? attempt.text : undefined,
+			// Formulate-mode metrics the falsification gate needs and nothing else
+			// writes: which language shipped, how much it grew, whether class-A came
+			// in with the draft (docs/06 R4/R7).
+			...(guards.header
+				? {
+						mode: "formulate",
+						lang: attempt.kind === "text" ? attempt.lang ?? null : null,
+						ratio: attempt.kind === "text" ? ratioOf(attempt.text, source) : null,
+						inherited_cjk: foreignScriptIn(guards.draft),
+					}
+				: {}),
 		});
 		return attempt;
 	}
@@ -568,12 +584,12 @@ export default function (pi: ExtensionAPI) {
 			else if (a === "auto") {
 				enabled = true;
 				forced = null;
-				setLangState(null); // re-detect from the next human turn
+
 			} else if (a !== "status" && raw) {
 				enabled = true;
 				forced = targetName(raw);
 				if (forced && forced.toLowerCase() === workingName().toLowerCase()) forced = null; // see ensureSettings
-				setLangState(forced); // a forced target IS the delivery language until /translator auto
+
 			}
 			const appends = Object.keys(settings?.promptAppend ?? {});
 			const translator = resolveTranslator(ctx);
@@ -599,26 +615,6 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	// Restore the delivery language from the DURABLE branch, never from the live
-	// context array: after a compaction the stamped user messages are gone from
-	// the latter, which would silently downgrade a long German session to unknown
-	// (docs/06 R5 — the claim "compaction cannot erase the language" is only true
-	// against getBranch(), which is append-only).
-	pi.on("session_start", async (_event: any, ctx: any) => {
-		ensureSettings(ctx);
-		if (!enabled || userLang !== null) return;
-		const entries: any[] = ctx.sessionManager?.getBranch?.() ?? [];
-		for (let i = entries.length - 1; i >= 0; i--) {
-			const m = entries[i]?.type === "message" ? entries[i].message : undefined;
-			const lang = m?.role === "user" ? m?.[META_KEY]?.userLang : undefined;
-			if (typeof lang === "string" && lang) {
-				setLangState(lang);
-				dbg(`session_start: restored userLang ${lang} from ${entries.length} durable entries`);
-				break;
-			}
-		}
-	});
-
 	pi.on("before_agent_start", async (event: any, ctx: any) => {
 		// Only a real user prompt may redefine the delivery language. A run woken by
 		// an injected custom message (delegation_result from the subagents extension)
@@ -641,7 +637,6 @@ export default function (pi: ExtensionAPI) {
 	// The English original is kept as metadata; the `context` handler restores
 	// it, so tool-call history stays working-language for the model.
 	async function translateUiForm(msg: any, ctx: any): Promise<any | undefined> {
-		if (!forced && questionIsWorkingLang) return undefined;
 		const translator = resolveTranslator(ctx);
 		if (!translator) {
 			notify(ctx, "no translator model — questions stay in the working language");
@@ -672,7 +667,7 @@ export default function (pi: ExtensionAPI) {
 		const t0 = Date.now();
 		// No retry here: for forms the English fallback IS the UX, and a
 		// wobbly endpoint would pay double latency on every form (review #4.3).
-		const attempt = await translateOnce(ctx, translator.model, systemPrompt, payload, guards, reasoningUnsupported);
+		const attempt = await translateOnce(ctx, translator.model, systemPrompt, payload, guards, reasoningUnsupported, { v: false });
 		logLine({ dir: "form", model: translator.label, ms: Date.now() - t0, verdict: attempt.kind, in: strings.join("\n"), out: attempt.kind === "text" ? attempt.text : undefined });
 		if (attempt.kind !== "text") {
 			if (failed(attempt)) notify(ctx, "question-form translation failed — questions stay in the working language");
@@ -716,31 +711,18 @@ export default function (pi: ExtensionAPI) {
 			// turn opener: a mid-turn German follow-up into an English-opening
 			// turn would otherwise be answered in English, silently (review MEDIUM).
 			lastUserPrompt = text;
-			if (!enabled) return;
-			const translator = resolveTranslator(ctx);
-			if (!translator) {
-				setLangState(null); // unknown is NOT "already English" — let the reply attempt surface the breakage
-				return;
-			}
-			// F3 (docs/06): the model reads the request exactly as written — the
-			// 100%-working-language invariant was unachievable anyway (memories, tool
-			// results and file content carry the user's language). This call only picks
-			// the language of the ANSWER, so the pre-start round trip returns a name
-			// instead of a translation, and the user's own wording stays intact.
-			const t0 = Date.now();
-			const answer = await detectLanguage(ctx, translator, text);
-			const verdict = parseLanguageName(answer ?? "", workingName());
-			const name = verdict.kind === "working" ? workingName() : verdict.kind === "lang" ? verdict.name : null;
-			setLangState(nextUserLang(userLang, name, proseOnly(text).split(/\s+/).filter(Boolean).length, forced));
-			logLine({ dir: "detect", model: translator.label, ms: Date.now() - t0, verdict: verdict.kind, lang: userLang, in: text });
-			dbg(`detect ${verdict.kind}${verdict.kind === "lang" ? ` ${verdict.name}` : ""} → deliver in ${userLang ?? "unknown"}`);
-			return { message: { ...msg, [META_KEY]: { ...(msg as any)[META_KEY], userLang: userLang ?? undefined } satisfies TranslatorMeta } };
+			// F4 (docs/06): nothing else runs on a human turn. The request reaches the
+			// model exactly as written and the delivery language is decided by the
+			// formulation call itself — a pre-start call bought a gate that no longer
+			// exists. Machine-triggered turns never get here: they carry no text.
+			return;
 		}
 
 		if (msg.role !== "assistant") return;
 		ensureSettings(ctx);
 		if (!enabled) return;
-		// ask_user forms: the arguments are the human-visible payload.
+		// ask_user forms: the arguments are the human-visible payload. Same call
+		// regardless of language — its own NONE contract handles same-language.
 		if (msg.content.some((b: any) => (b.type === "toolCall" || b.type === "toolUse") && b.name === "ask_user")) return translateUiForm(msg, ctx);
 		// Intermediate narration carries tool calls: never the final answer.
 		if (msg.content.some((b: any) => b.type === "toolCall" || b.type === "toolUse")) return;
@@ -752,17 +734,11 @@ export default function (pi: ExtensionAPI) {
 		// Never silent: this skip ships the answer in the working language. It also
 		// has to land in the audit log — a skip that leaves no row makes the whole
 		// delivery population unreadable (docs/06 R4).
-		if (!lastUserPrompt) {
-			logLine({ dir: "reply", model: null, ms: 0, verdict: "skip", reason: "no-question", in: draft });
-			dbg("reply: no user prompt seen in this session yet → no delivery translation");
-			return;
-		}
-
-		// Reply gate: the prompt-translation verdict already told us the
-		// question is in the working language → nothing to translate to.
-		if (!forced && questionIsWorkingLang) {
-			logLine({ dir: "reply", model: null, ms: 0, verdict: "skip", reason: "question-in-working-language", in: draft });
-			dbg("reply: question in working language → no delivery translation");
+		// No question and no remembered language = no evidence for a target. Deliver
+		// as written, visibly, and never guess a language (docs/05 "Unknown ≠ English").
+		if (!lastUserPrompt && !forced && !lastLang) {
+			logLine({ dir: "reply", model: null, ms: 0, verdict: "skip", reason: "no-language-evidence", in: draft });
+			dbg("reply: no question and no remembered language → delivering as written");
 			return;
 		}
 
@@ -772,18 +748,34 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		const systemPrompt = buildSystemPrompt(workingName(), renderAppend(settings?.promptAppend), forced);
-		const attempt = await translateWithRetry(ctx, translator, systemPrompt, draft, { question: lastUserPrompt, draft, spans: [], rejectNone: !!forced, skipScript: !!forced }, "reply");
+		// Owner decision: every answer is formulated, same-language ones included,
+		// so NONE would mean "the polisher did nothing" — rejectNone turns it into a
+		// visible failure instead of a silent raw delivery.
+		const target = forced ?? lastLang;
+		const systemPrompt = buildFormulatePrompt(workingName(), renderAppend(settings?.promptAppend), target);
+		const attempt = await translateWithRetry(ctx, translator, systemPrompt, draft, { question: lastUserPrompt, draft, spans: [], rejectNone: true, skipScript: !!forced, skipDiffers: true, header: true }, "reply");
 		if (failed(attempt)) {
 			notify(ctx, `translation ${attempt.kind === "reject" ? `rejected by the ${attempt.guard} guard` : `failed (${attempt.why})`} (${translator.label}) — delivering original answer`);
 			return;
 		}
 		if (attempt.kind === "none") {
-			dbg("reply: same language → passthrough");
+			// Unreachable with rejectNone; kept so a future guard change cannot turn
+			// "the polisher said NONE" back into a silent raw delivery.
+			logLine({ dir: "reply", model: translator.label, ms: 0, verdict: "none", mode: "formulate", in: draft });
+			notify(ctx, "formulation returned NONE — delivering the draft as written");
+			return;
+		}
+		if (attempt.lang) lastLang = attempt.lang; // the fallback for question-less turns
+		// A formulation identical to the draft is the weak-model signature (R7 M2).
+		// Deliver the draft and log it — silently passing it off as formulated would
+		// hide exactly the failure the owner's model decision has to be measured on.
+		if (normText(attempt.text) === normText(draft)) {
+			logLine({ dir: "reply", model: translator.label, ms: 0, verdict: "noop", mode: "formulate", lang: attempt.lang ?? null, in: draft, out: attempt.text });
+			dbg("reply: formulation changed nothing (polisher did nothing)");
 			return;
 		}
 		lastOriginal = draft;
-		dbg(`reply translated (${forced ?? "auto-detected"} via ${translator.label}, ${draft.length} → ${attempt.text.length} chars)`);
+		dbg(`reply formulated (${target ?? "inferred from question"} via ${translator.label}, ${draft.length} → ${attempt.text.length} chars)`);
 		// F1: the English draft stays reachable as metadata; `context` hands it
 		// back to the model on every later call.
 		return {

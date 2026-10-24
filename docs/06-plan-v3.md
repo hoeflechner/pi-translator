@@ -1,7 +1,54 @@
 # 06 — v3 plan: stored user language, repair-polish mode, optional prompt passthrough
 
-**STATUS 2026-10-24: F3 IMPLEMENTED (prompt translation removed, language
-detect added). F1 and F2 still design-only; second review run in flight.**
+**STATUS 2026-10-24: F3 and F4 IMPLEMENTED. No pre-start call and no delivery
+gate remain: every answer goes through one always-on formulation call. F2's
+repair semantics are absorbed into it; F1 as a gate design is dead.**
+
+## F4 — the gate died with the thing it gated (owner decisions, same day)
+
+Owner decisions, both explicit:
+
+- **The detect call is deleted.** It existed only to decide whether the reply
+  needed translating. Once every answer is formulated it decided nothing, and
+  it cost 5.0 s before the agent started (review run 2 predicted ≥4.5 s from
+  the §8 baseline before it was measured — the endpoint's reasoning tokens
+  dominate, not output size).
+- **Same-language answers are formulated too**, English included. So the reply
+  call always runs, and `NONE` from it now means *"the polisher did nothing"* —
+  a failure, not a pass-through: `rejectNone` is on, and a normalised-equality
+  **noop** check logs `verdict:"noop"` and delivers the draft rather than
+  pretending it was formulated (R7 M2 measures exactly this population).
+
+What one prompt now does (`buildFormulatePrompt`): translate if the draft is in
+the wrong language, re-derive it cleanly if it is not; **add nothing that is
+not in the DRAFT**; answer with the language name on the first line. The header
+is parsed by `splitLanguageHeader` and **stripped before the guards and before
+delivery** (R2 — a name line reaching the reader or the model is the
+invisible failure). A model that omits the header keeps its whole answer.
+
+Deleted with it: `buildDetectPrompt`, `detectLanguage`, `nextUserLang`,
+`STICKY_WORD_FLOOR`, `buildSystemPrompt`, the `userLang` message stamp, the
+`session_start` restore walk, and both delivery gates. `parseLanguageName`
+survives as the header parser; `piTranslator.userLang` is gone.
+
+Guards in formulate mode: `skipDiffers`, ceiling **4×**, floor 0.4×, masking
+and `scriptGuardOk` untouched. Audit rows gain what the falsification gate
+needs and nothing else writes: `mode:"formulate"`, `lang`, `ratio`,
+`inherited_cjk`.
+
+**Review findings this moots, and why** — recorded so nobody re-litigates them
+against the new shape: **R1** (both gates must migrate together) — there are no
+gates; `ask_user` forms always attempt and their own `NONE` contract handles
+same-language. **R2** (which call carries the header, and the `modelText`
+strip) — the header rides the single outbound call, and `modelText` no longer
+exists. **R3** (a script check cannot separate German from English, so polish
+would never fire) — nothing has to fire; it always runs. **R5** (the reload
+walk must read the durable branch) — no state to reload; the only surviving
+memory is `lastLang`, a per-process fallback for machine-triggered turns that
+carry no question, where guessing would be the older bug. Still live from that
+review: **R4** (log every decision — implemented), **R6** (no-comments clause
+and a defined noop — implemented), **R7** (thresholds and the gate script —
+open).
 
 ## F3 — shipped same day as this document (owner decision)
 

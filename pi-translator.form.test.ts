@@ -52,11 +52,11 @@ async function main() {
 	factory(pi);
 
 	const calls: string[] = [];
-	const counts = { detect: 0, prompt: 0, reply: 0, form: 0 };
-	const DE_REPLY = { stopReason: "stop", content: [{ type: "text", text: "Kurz gesagt: Das Depot soll Dividenden verbuchen." }] };
-	let reply: any = DE_REPLY; // DRAFT-branch answer, per test
+	const counts = { formulate: 0, prompt: 0, reply: 0, form: 0 };
+	// Formulate mode answers "<language>\n<text>" — the header must never reach the user.
+	const DE_REPLY = { stopReason: "stop", content: [{ type: "text", text: "German\nKurz gesagt: Das Depot soll Dividenden verbuchen." }] };
+	let reply: any = DE_REPLY; // formulate-branch answer, per test
 	const EN_PROMPT = { stopReason: "stop", content: [{ type: "text", text: "Should the depot app book dividends in the future? Ask via form." }] };
-	let DETECT_ANSWER = "German"; // detector answer, per test
 	const ctx: any = {
 		cwd: "/tmp/pt-formtest", // no settings file → block-free, quiet
 		hasUI: false,
@@ -68,8 +68,7 @@ async function main() {
 			streamSimple: (_m: any, req: any) => ({
 				result: async () => {
 					const payload = req.messages[0].content as string;
-					// F3: detection is its own tiny call, recognised by its system prompt.
-					if (String(req.systemPrompt).includes("Which language is the USER REQUEST")) { counts.detect++; return { stopReason: "stop", content: [{ type: "text", text: DETECT_ANSWER }] }; }
+					if (String(req.systemPrompt).includes("final formulation layer")) { counts.formulate++; return reply; }
 					calls.push(payload.slice(0, 30));
 					if (payload.startsWith("USER REQUEST:")) { counts.prompt++; return EN_PROMPT; }
 					if (payload.includes("SEGMENTS:")) { counts.form++; return { stopReason: "stop", content: [{ type: "text", text: JSON.stringify(DE_BATCH) }] }; }
@@ -81,48 +80,61 @@ async function main() {
 	};
 
 	const sections: Record<string, string> = {};
-	await t("user message reaches the model as written, language stored", async () => {
-		await handlers.before_agent_start({ prompt: "Soll das Depot Dividenden buchen? Bring es als Formular.", systemPromptOptions: { sections } }, ctx);
+	await t("a human turn runs no translator call at all (F4)", async () => {
+		await handlers.before_agent_start({ prompt: USER_TEXT, systemPromptOptions: { sections } }, ctx);
 		assert.ok(sections.pi_translator?.includes("English"), "guideline section injected");
 		const m = await handlers.message_end({ message: { role: "user", content: USER_TEXT } }, ctx);
-		assert.equal(counts.detect, 1, "exactly one detect call, no prompt translation");
-		assert.equal(counts.prompt, 0, "F3: the request is never translated");
-		assert.equal(m?.message?.piTranslator?.userLang, "German", "the delivery language is stored on the message");
-		assert.equal(m?.message?.content, USER_TEXT, "the user's own wording is untouched");
-		assert.equal(m?.message?.piTranslator?.modelText, undefined, "no working-language override is smuggled in");
+		assert.equal(m, undefined, "the user message is not replaced — nothing is translated before the agent starts");
+		assert.equal(counts.prompt, 0, "no prompt translation");
+		assert.equal(counts.formulate, 0, "no pre-start formulation either");
 	});
 
-	await t("sticky rule judges prose words, not code volume", async () => {
-		const before = DETECT_ANSWER;
-		DETECT_ANSWER = "English"; // detector says English: only real prose may flip the session
-		const codeHeavy = "Kurz gesagt, mach das.\n```bash\n" + Array.from({ length: 30 }, (_, i) => `echo step${i} && run --flag ${i}`).join("\n") + "\n```";
-		const m = await handlers.message_end({ message: { role: "user", content: codeHeavy } }, ctx);
-		assert.equal(m?.message?.piTranslator?.userLang, "German", "30 lines of English code must not flip a German session");
-		DETECT_ANSWER = before;
+	await t("the answer is formulated and the header never reaches the reader", async () => {
+		const r = await handlers.message_end({ message: { role: "assistant", content: [{ type: "text", text: "In short: the depot should book dividends." }] } }, ctx);
+		assert.equal(counts.formulate, 1, "every answer is formulated, same-language ones included");
+		const delivered = r?.message?.content?.[0]?.text;
+		assert.equal(delivered, "Kurz gesagt: Das Depot soll Dividenden verbuchen.", "the language-name line is stripped");
+		assert.ok(!/^German\b/m.test(delivered), "no header line in what the user reads");
+		assert.equal(r.message.piTranslator.original, "In short: the depot should book dividends.", "the draft stays reachable for the model (F1)");
 	});
 
-	await t("a skipped delivery still writes an audit row (docs/06 R4)", async () => {
-		const log = `/tmp/pt-skip-${process.pid}.jsonl`;
+	await t("a formulation that changed nothing is a logged noop, not a silent pass", async () => {
+		const log = `/tmp/pt-noop-${process.pid}.jsonl`;
 		try { unlinkSync(log); } catch { /* fresh */ }
+		const savedReply = reply;
 		process.env.PI_TRANSLATOR_LOG = log;
 		try {
-			// gate closed: the question is in the working language and nothing is forced
-			const savedLang = DETECT_ANSWER;
-			DETECT_ANSWER = "NONE";
-			const saved = await handlers.message_end({ message: { role: "user", content: "Just a plain English question here, ten words or so." } }, ctx);
-			assert.equal(saved?.message?.piTranslator?.userLang, "English", "a long working-language turn does switch");
-			DETECT_ANSWER = savedLang;
-			const r = await handlers.message_end({ message: { role: "assistant", content: [{ type: "text", text: "A working-language answer that needs no translation at all." }] } }, ctx);
-			assert.equal(r, undefined, "no delivery call when the question is in the working language");
+			reply = { stopReason: "stop", content: [{ type: "text", text: "English\nThe exact same words as the draft." }] };
+			const r = await handlers.message_end({ message: { role: "assistant", content: [{ type: "text", text: "The exact same words as the draft." }] } }, ctx);
+			assert.equal(r, undefined, "the draft is delivered as written when the polisher did nothing");
 			const rows = readFileSync(log, "utf-8").trim().split("\n").map((l) => JSON.parse(l));
-			const skip = rows.find((x) => x.dir === "reply" && x.verdict === "skip");
-			assert.ok(skip, "the skip must be visible in the audit log, not only in the debug stream");
-			assert.equal(skip.reason, "question-in-working-language", "and say why it skipped");
+			const noop = rows.find((x) => x.verdict === "noop");
+			assert.ok(noop, "and the audit log says so (R6/R7 M2 — this is the weak-model signature)");
+			assert.equal(noop.mode, "formulate");
+			assert.equal(noop.lang, "English", "the header is parsed even on a noop");
+		} finally {
+			reply = savedReply;
+			delete process.env.PI_TRANSLATOR_LOG;
+		}
+	});
+
+	await t("a question-less machine turn skips visibly, never guessing a language", async () => {
+		const log = `/tmp/pt-skip-${process.pid}.jsonl`;
+		try { unlinkSync(log); } catch { /* fresh */ }
+		const pi2: any = { on: (ev: string, fn: any) => (fresh[ev] = fn), registerCommand: () => {} };
+			const fresh: Record<string, (e: any, c: any) => Promise<any>> = {};
+		factory(pi2); // new instance: no question, no remembered language
+		process.env.PI_TRANSLATOR_LOG = log;
+		try {
+			await fresh.before_agent_start({ prompt: "", systemPromptOptions: { sections: {} } }, ctx);
+			const r = await fresh.message_end({ message: { role: "assistant", content: [{ type: "text", text: "A delegation result arrived with no question to answer." }] } }, ctx);
+			assert.equal(r, undefined, "delivered as written rather than guessed into a language");
+			const rows = readFileSync(log, "utf-8").trim().split("\n").map((l) => JSON.parse(l));
+			const skip = rows.find((x) => x.verdict === "skip");
+			assert.ok(skip, "the skip is visible in the audit log (R4)");
+			assert.equal(skip.reason, "no-language-evidence");
 		} finally {
 			delete process.env.PI_TRANSLATOR_LOG;
-			// leave the shared instance in the German state the rest of the file expects
-			DETECT_ANSWER = "German";
-			await handlers.message_end({ message: { role: "user", content: USER_TEXT + " Bitte gründlich, mit Begründung und Beispielen." } }, ctx);
 		}
 	});
 
@@ -203,17 +215,17 @@ async function main() {
 		// only reproduce it — it just doubles cost and latency on every turn.
 		const draft = "Restating: the depot should book dividends and record them as cash ledger entries.";
 		const msg = { role: "assistant", content: [{ type: "text", text: draft }] };
-		reply = { stopReason: "stop", content: [{ type: "text", text: draft }] }; // verbatim echo → overlap guard
-		const before = counts.reply;
+		reply = { stopReason: "stop", content: [{ type: "text", text: "German\n" + draft }] }; // verbatim echo → noop, not a retry
+		const before = counts.formulate;
 		const r = await handlers.message_end({ message: msg }, ctx);
-		assert.equal(counts.reply - before, 1, "one translator call, no identical retry");
+		assert.equal(counts.formulate - before, 1, "one call, no identical retry");
 		assert.equal(r, undefined, "original answer delivered");
 		reply = { stopReason: "error", content: [] }; // the fluke class IS retried
-		const before2 = counts.reply;
+		const before2 = counts.formulate;
 		await handlers.message_end({ message: msg }, ctx);
 		// 3, not 2: the first attempt is itself two calls (reasoning "minimal" rejected
 		// with empty content → probe marks the model, one call without the option).
-		assert.equal(counts.reply - before2, 3, "transport error gets its one retry (plus the reasoning probe)");
+		assert.equal(counts.formulate - before2, 3, "transport error gets its one retry (plus the reasoning probe)");
 		reply = DE_REPLY;
 	});
 

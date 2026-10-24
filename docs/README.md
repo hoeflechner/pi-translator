@@ -1,15 +1,19 @@
 # pi-translator — Language Tail for pi
 
-**Status: v2 IMPLEMENTED AND DRILLED (2026-10-10) — bidirectional context-
-free translation, model context 100% working language, all drills passed.
-v1 spec: `03-design-language-tail.md`; v2: `05-plan-v2.md`.**
+**Status: v3 F3+F4 IMPLEMENTED (2026-10-24) — no pre-start call, no delivery
+gate: the user's text reaches the model as written and every answer is
+formulated by one context-free call. v1 spec: `03-design-language-tail.md`;
+v2: `05-plan-v2.md`; measurements: `01-findings.md` §8; v3: `06-plan-v3.md`.**
 Concept: the agent always **works in the machine's language** (English by
-default — its strongest token region). Both directions of a turn are wrapped
-by **context-free LLM translation calls** (question → working language for
-the model; answer → the user's language for delivery), and a `context`
-handler hands the model back its working-language originals on every later
-call — the model context stays 100% working language, the transcript stays
-the user's language.
+default — its strongest token region). Since **F4** the user's own text is
+**not** translated before the model sees it: the 100%-working-language
+invariant was unachievable anyway, because injected memories, tool results and
+file content carry the user's language regardless. What remains is one
+**context-free formulation call** per answer, which produces the final text in
+the reader's language — same-language answers included — plus a `context`
+handler that hands the model back **its own** working-language drafts and tool
+arguments on every later call. The transcript stays the user's language; the
+model's own words stay the working language.
 
 **This is not a German patch. German was just the symptom that proved the
 mechanism. The design target is: any target language, zero language-

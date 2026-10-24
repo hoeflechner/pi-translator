@@ -39,7 +39,7 @@ in a fresh context. That removes the entire failure regime.
 | `02-architecture.md` | Chosen mechanism + exact pi extension API ground truth (verified signatures, v1 test log) |
 | `03-design-language-tail.md` | **The implementation spec**: single context-free translator call doing detection + translation, generic validation, config, test plan, open questions |
 | `05-plan-v2.md` | **v2 plan**: 100%-English model context (context-restore), prompt translation, placeholder protection, adopted UX from prior art, rejected options, naming situation |
-| `06-plan-v3.md` | **v3 plan (design draft, 2026-10-24, not implemented)**: stored user language as message metadata, repair-polish mode for drifted drafts, `translatePrompt` opt-in, guard matrix, falsification gate for the translator-model decision, deploy order |
+| `06-plan-v3.md` | **v3 (2026-10-24)**: F3 shipped — prompt translation deleted in favour of a language-detect call + stored `userLang`; F1/F2 design-only: stored user language as message metadata, repair-polish mode for drifted drafts, `translatePrompt` opt-in, guard matrix, falsification gate for the translator-model decision, deploy order |
 
 ## Quickstart (verified commands, 2026-10-10)
 

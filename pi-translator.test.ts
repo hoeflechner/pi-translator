@@ -3,7 +3,7 @@
  * runtime. Run: node --experimental-strip-types pi-translator.test.ts
  */
 import assert from "node:assert/strict";
-import { proseOnly, scriptsOf, scriptGuardOk, lengthOk, renderAppend, buildSystemPrompt, buildPromptTranslatePrompt, workingGuideline, maskProtected, unmaskProtected, differsFromSource, replaceText, collectUiStrings, applyUiStrings, parseBatchReply, buildBatchTranslatePrompt } from "./pi-translator.ts";
+import { proseOnly, scriptsOf, scriptGuardOk, lengthOk, renderAppend, buildSystemPrompt, buildPromptTranslatePrompt, workingGuideline, maskProtected, unmaskProtected, differsFromSource, replaceText, collectUiStrings, applyUiStrings, parseBatchReply, buildBatchTranslatePrompt, buildDetectPrompt, parseLanguageName, nextUserLang, canonicalLangName, STICKY_WORD_FLOOR } from "./pi-translator.ts";
 
 let n = 0;
 const t = (name: string, fn: () => void) => {
@@ -302,6 +302,49 @@ const machine = (a: any) =>
 		}
 		assert.equal(k, tr.length, `iter ${iter}: every translation consumed in collect order`);
 	}
+});
+
+/* ---------- F3 (docs/06): language detection replaces prompt translation ---------- */
+
+t("workingGuideline no longer promises a translated input", () => {
+	const s = workingGuideline("English");
+	assert.ok(!/translated into English before you read/i.test(s), "prompt translation is gone — the guideline must not lie about it");
+	assert.ok(/untranslated/i.test(s), "must state that the user text arrives as written");
+	assert.ok(/translation layer on delivery/i.test(s), "delivery translation stays");
+});
+
+t("buildDetectPrompt asks for a name, NONE and CODE", () => {
+	const s = buildDetectPrompt("English");
+	assert.ok(/English/.test(s) && /NONE/.test(s) && /CODE/.test(s), "three answer classes");
+	assert.ok(/never answer or translate/i.test(s), "must forbid answering the request");
+});
+
+t("parseLanguageName maps the detector answer", () => {
+	assert.deepEqual(parseLanguageName("NONE", "English"), { kind: "working" }, "NONE = working language");
+	assert.deepEqual(parseLanguageName("German", "English"), { kind: "lang", name: "German" });
+	assert.deepEqual(parseLanguageName("german.", "English"), { kind: "lang", name: "German" }, "trailing dot + case");
+	assert.deepEqual(parseLanguageName("German", "german"), { kind: "working" }, "naming the working language is working");
+	assert.deepEqual(parseLanguageName("de", "English"), { kind: "lang", name: "German" }, "code answer canonicalised");
+	assert.deepEqual(parseLanguageName("CODE", "English"), { kind: "code" }, "bare command carries no language");
+	assert.deepEqual(parseLanguageName("This is German and it looks fine", "English"), { kind: "fail" }, "a chatty answer is a model that started talking, not a language");
+	assert.deepEqual(parseLanguageName("", "English"), { kind: "fail" });
+	assert.deepEqual(parseLanguageName("???", "English"), { kind: "fail" }, "no name-shaped answer");
+});
+
+t("nextUserLang keeps a short input from flipping the session", () => {
+	assert.equal(nextUserLang("German", "English", 2, null), "German", '"ok?" must not switch a German session');
+	assert.equal(nextUserLang("German", "English", 12, null), "English", "a long English turn does switch");
+	assert.equal(nextUserLang(null, "German", 3, null), "German", "first turn is taken even when short");
+	assert.equal(nextUserLang("German", null, 30, null), "German", "no evidence (fail/CODE) keeps the last known");
+	assert.equal(nextUserLang(null, null, 30, null), null, "still unknown stays unknown (never assumed working)");
+	assert.equal(nextUserLang("German", "English", 3, "Français"), "Français", "/translator French wins over everything");
+	assert.ok(STICKY_WORD_FLOOR >= 2 && STICKY_WORD_FLOOR <= 12, "sticky floor is a sane word count");
+});
+
+t("canonicalLangName shares the operator table", () => {
+	assert.equal(canonicalLangName("de"), "German");
+	assert.equal(canonicalLangName("GERMAN"), "German");
+	assert.equal(canonicalLangName("Klingon"), "Klingon", "unknown names pass through verbatim");
 });
 
 console.log(`pi-translator.test.ts: ${n} tests passed`);

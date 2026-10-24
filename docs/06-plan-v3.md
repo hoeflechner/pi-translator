@@ -1,8 +1,50 @@
 # 06 — v3 plan: stored user language, repair-polish mode, optional prompt passthrough
 
-**STATUS 2026-10-24: DESIGN DRAFT. Nothing implemented. Sequenced by the
-owner as: this document → second review run → implement. Do not code against
-this file until the review run has reported.**
+**STATUS 2026-10-24: F3 IMPLEMENTED (prompt translation removed, language
+detect added). F1 and F2 still design-only; second review run in flight.**
+
+## F3 — shipped same day as this document (owner decision)
+
+The owner promoted F3 out of the deferred column on the spot, with the
+argument that settled it: **the 100%-working-language invariant was never
+achievable**, because injected memories, tool results and file content carry
+the user's language regardless of what the prompt translator does. F2 was
+paying a pre-start round trip (median 4.5 s, 45 % of them returning `NONE`)
+for protection another layer undid — while paraphrasing every request on its
+way in.
+
+Implementation, in one commit:
+
+- **Removed**: the F2 call site in the user branch of `message_end`, the
+  `modelText` field of `TranslatorMeta`, and the user-side restore branch of
+  the `context` handler. `buildPromptTranslatePrompt` **stays** — the summary
+  path still uses it, and summaries are pi-generated text, not user input.
+- **Added**: `buildDetectPrompt` + `parseLanguageName` + `nextUserLang` +
+  `canonicalLangName` + `STICKY_WORD_FLOOR` (all pure, all unit-tested), a
+  `detectLanguage()` single call, `userLang` state with `setLangState()`, a
+  `piTranslator.userLang` stamp on the user message, and a transcript scan in
+  the `context` handler that restores `userLang` after a restart.
+- **The gate can no longer default to "already English".** The old user
+  branch reset `questionIsWorkingLang = true` before judging — the exact
+  shape that produced the silent-skip class of `6a325a5`/`d5f4fce`. Initial
+  value is now `false`, and every path assigns explicitly through
+  `setLangState`, so unknown means *attempt and surface*, never *assume*.
+- **Answering what `userLang` actually controls** (stated plainly because it
+  bounds what F1 and F2 may claim): it gates *whether* the reply is
+  delivered through the translator, and it is log/state text. The delivered
+  **language** is still inferred by the reply translator from the QUESTION,
+  as before. F2's polish mode is the first place that needs the name
+  explicitly. Do not describe `userLang` as "the target language setting".
+- The `workingGuideline()` sentence promising "incoming user text is
+  translated into English before you read it" is gone — the guideline must
+  not describe a mechanism that no longer exists.
+- **Not built**: a `translatePrompt` config flag. Deletion is the revert
+  story; a dormant branch that nobody flips is the kind of flexibility this
+  project keeps refusing. If F3 has to come back, `git revert` is the path.
+
+Cost side, from the same log: the 98 prompt calls (13.9 translator-minutes,
+45 % of them `NONE`) become one tiny detect call per human turn, and the
+user's own wording is what the model reads.
 
 Owner policy decisions (2026-10-24), binding for this plan:
 

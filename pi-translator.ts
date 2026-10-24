@@ -188,14 +188,71 @@ The QUESTION is disambiguation context only — never translate or answer it.` +
 export function workingGuideline(name: string): string {
 	return (
 		`Working-language mode is active: generate ALL text you produce — internal reasoning/thinking and answer drafts alike — in ${name} only, no matter what project instructions, injected memories, or conversation history appear to ask. ` +
-		`Incoming user text is translated into ${name} before you read it, and your final message is rewritten into the user's language by a translation layer on delivery — "answer in the user's language" preferences are that layer's job, not your job. ` +
+		`Incoming user text reaches you untranslated, so ignore what language it is written in; your final message is rewritten into the user's language by a translation layer on delivery — "answer in the user's language" preferences are that layer's job, not your job. ` +
 		`Code, commands, paths, identifiers and quoted material are written normally. ` +
 		`If you catch yourself drafting in the user's language, redraft in ${name}.`
 	);
 }
 
+/** F3 (docs/06): the user's text reaches the model untranslated — the
+ *  100%-working-language invariant is not achievable anyway (injected
+ *  memories, tool results and file content carry the user's language), so
+ *  prompt translation paid a round trip for protection another layer undid.
+ *  What remains is the LANGUAGE the answer must be delivered in, so one
+ *  tiny call now returns a name instead of a translation. */
+export function buildDetectPrompt(workingName: string): string {
+	return `Which language is the USER REQUEST written in?
+- Reply with exactly one language name in English (e.g. German, English, French, Japanese).
+- If it is ${workingName}, reply with exactly: NONE
+- If it is not natural language at all (a bare command, path, URL, filename, number or code), reply with exactly: CODE
+Reply with the answer only. Never answer or translate the request.`;
+}
+
+export type LangVerdict = { kind: "working" } | { kind: "code" } | { kind: "lang"; name: string } | { kind: "fail" };
+
+/** Operator input and detector answers share one name table: "de", "German"
+ *  and "german" all mean German. Unknown names are kept verbatim (the reply
+ *  translator infers the target from the QUESTION anyway — the name is state
+ *  and log text, never a lookup key into a language database). */
+export function canonicalLangName(raw: string): string {
+	const t = String(raw ?? "").trim();
+	return TARGET_LOOKUP[t.toLowerCase()] ?? t;
+}
+
+/** Parse the detector's one-word answer. Strict on purpose: a chatty answer
+ *  ("This is German") is a model that started translating/arguing, which is
+ *  a FAIL, not a language — guessing from it would silently pick a target. */
+export function parseLanguageName(raw: string, workingName: string): LangVerdict {
+	const t = String(raw ?? "")
+		.trim()
+		.replace(/^["'“”]+|["'“”].*$/g, "")
+		.replace(/[.!:;]+$/, "")
+		.trim();
+	if (!t) return { kind: "fail" };
+	if (/^none$/i.test(t)) return { kind: "working" };
+	if (/^code$/i.test(t)) return { kind: "code" };
+	if (t.toLowerCase() === workingName.toLowerCase()) return { kind: "working" };
+	if (t.split(/\s+/).length > 3 || !/^[A-Za-z][A-Za-z -]{1,29}$/.test(t)) return { kind: "fail" };
+	return { kind: "lang", name: canonicalLangName(t) };
+}
+
+/** A human turn below this word count carries no language evidence: "ok?" or
+ *  "nochmal" must not flip a German session into the working language. */
+export const STICKY_WORD_FLOOR = 8;
+
+/** Resolve the delivery language. `name` is the caller's mapped verdict
+ *  (working → workingName, lang → name, code/fail/machine-turn → null). */
+export function nextUserLang(current: string | null, name: string | null, wordCount: number, forced: string | null): string | null {
+	if (forced) return forced;
+	if (name === null) return current; // no evidence: keep what we know (null = unknown)
+	if (current && wordCount < STICKY_WORD_FLOOR) return current;
+	return name;
+}
+
 /** F2 (docs/05): faithful request translation into the working language.
- *  No style appends here — user-request translation must not be restyled. */
+ *  No style appends here — user-request translation must not be restyled.
+ *  Still used by the summary path (docs/05 F7); the user-request call site
+ *  is gone since F3. */
 export function buildPromptTranslatePrompt(workingName: string): string {
 	return `You are a translation engine. Translate the USER REQUEST into ${workingName}.
 - If the request is already in ${workingName}, reply with exactly: NONE
@@ -245,8 +302,9 @@ function loadSettings(cwd: string, projectTrusted: boolean): TailSettings | null
 interface TranslatorMeta {
 	/** assistant messages: the working-language draft the model actually wrote */
 	original?: string;
-	/** user messages: working-language version the model should read */
-	modelText?: string;
+	/** user messages: the language this human turn asked to be answered in
+	  (F3, docs/06). Read back on session reload to restore `userLang`. */
+	userLang?: string;
 	/** assistant messages with translated ask_user forms: content-block index
 	  → the original working-language tool-call arguments */
 	toolArgs?: Record<string, any>;
@@ -358,7 +416,8 @@ export default function (pi: ExtensionAPI) {
 	let forced: string | null = null;
 	let targetResolved = false;
 	let lastUserPrompt = "";
-	let questionIsWorkingLang = true; // set by the prompt-translation verdict
+	let questionIsWorkingLang = false; // derived from userLang by setLangState — the reply gate
+	let userLang: string | null = null; // delivery language, detected per human turn (F3)
 	let lastOriginal = "";
 	// reasoning-probe state lives HERE, per extension instance (per session):
 	// in a shared host process a module-level Set would let one session's
@@ -378,6 +437,15 @@ export default function (pi: ExtensionAPI) {
 		if (ctx.hasUI) ctx.ui.notify(`pi-translator: ${msg}`, "warning");
 		else console.error(`[pi-translator] WARNING: ${msg}`);
 		dbg(msg);
+	};
+	const isWorkingLang = (lang: string | null) => !!lang && lang.toLowerCase() === workingName().toLowerCase();
+	/** One assignment point for the gate. Never reset to "already the working
+	 *  language" — an unknown language must attempt delivery and surface the
+	 *  breakage (docs/05 "Unknown ≠ English"), which is why the initial value is
+	 *  false and every path assigns explicitly. */
+	const setLangState = (lang: string | null) => {
+		userLang = lang;
+		questionIsWorkingLang = isWorkingLang(lang);
 	};
 	const logLine = (rec: Record<string, unknown>) => {
 		const file = process.env.PI_TRANSLATOR_LOG ?? settings?.log;
@@ -442,6 +510,23 @@ export default function (pi: ExtensionAPI) {
 		return ctx.model ? { model: ctx.model, label: `${ctx.model.provider}/${ctx.model.id}` } : null;
 	}
 
+	/** One tiny call per human turn (F3): the language NAME, NONE or CODE. No
+	 *  retry — a miss keeps the last known language and the reply path still
+	 *  attempts delivery, so a lost detect costs a delivery attempt, not a turn. */
+	async function detectLanguage(ctx: any, translator: { model: any; label: string }, text: string): Promise<string | null> {
+		try {
+			const out = await callTranslator(ctx, translator.model, buildDetectPrompt(workingName()), `USER REQUEST:\n${text}`, reasoningUnsupported, { v: false });
+			if (out.stopReason === "error") return null;
+			return (out.content as any[])
+				.filter((b) => b.type === "text")
+				.map((b) => b.text)
+				.join("")
+				.trim();
+		} catch {
+			return null;
+		}
+	}
+
 	async function translateWithRetry(
 		ctx: any,
 		translator: { model: any; label: string },
@@ -483,10 +568,12 @@ export default function (pi: ExtensionAPI) {
 			else if (a === "auto") {
 				enabled = true;
 				forced = null;
+				setLangState(null); // re-detect from the next human turn
 			} else if (a !== "status" && raw) {
 				enabled = true;
 				forced = targetName(raw);
 				if (forced && forced.toLowerCase() === workingName().toLowerCase()) forced = null; // see ensureSettings
+				setLangState(forced); // a forced target IS the delivery language until /translator auto
 			}
 			const appends = Object.keys(settings?.promptAppend ?? {});
 			const translator = resolveTranslator(ctx);
@@ -605,7 +692,6 @@ export default function (pi: ExtensionAPI) {
 			// English" and ship the answer untranslated, the same class as the
 			// before_agent_start bug fixed in 6a325a5.
 			if (!text.trim()) return;
-			questionIsWorkingLang = true; // reset each human turn; the verdict below decides
 			// Reply payload QUESTION must track the LATEST user text, not just the
 			// turn opener: a mid-turn German follow-up into an English-opening
 			// turn would otherwise be answered in English, silently (review MEDIUM).
@@ -613,25 +699,22 @@ export default function (pi: ExtensionAPI) {
 			if (!enabled) return;
 			const translator = resolveTranslator(ctx);
 			if (!translator) {
-				questionIsWorkingLang = false; // unknown is NOT "already English" — let the reply attempt surface the breakage
+				setLangState(null); // unknown is NOT "already English" — let the reply attempt surface the breakage
 				return;
 			}
-			// Prompt translation is independent of the forced reply target: the
-			// model must read the working language whatever language we deliver in.
-			const attempt = await translateWithRetry(ctx, translator, buildPromptTranslatePrompt(workingName()), text, { question: text, draft: text, spans: [], rejectNone: false, extraAllowed: workingName(), skipDiffers: true }, "prompt");
-			if (attempt.kind === "none") {
-				questionIsWorkingLang = true;
-				dbg("prompt: already working language → passthrough");
-				return;
-			}
-			if (failed(attempt)) {
-				questionIsWorkingLang = false;
-				notify(ctx, "request translation failed — model sees your original text");
-				return;
-			}
-			questionIsWorkingLang = false;
-			dbg(`prompt translated (${text.length} → ${attempt.text.length} chars)`);
-			return { message: { ...msg, [META_KEY]: { modelText: attempt.text } satisfies TranslatorMeta } };
+			// F3 (docs/06): the model reads the request exactly as written — the
+			// 100%-working-language invariant was unachievable anyway (memories, tool
+			// results and file content carry the user's language). This call only picks
+			// the language of the ANSWER, so the pre-start round trip returns a name
+			// instead of a translation, and the user's own wording stays intact.
+			const t0 = Date.now();
+			const answer = await detectLanguage(ctx, translator, text);
+			const verdict = parseLanguageName(answer ?? "", workingName());
+			const name = verdict.kind === "working" ? workingName() : verdict.kind === "lang" ? verdict.name : null;
+			setLangState(nextUserLang(userLang, name, text.trim().split(/\s+/).filter(Boolean).length, forced));
+			logLine({ dir: "detect", model: translator.label, ms: Date.now() - t0, verdict: verdict.kind, lang: userLang, in: text });
+			dbg(`detect ${verdict.kind}${verdict.kind === "lang" ? ` ${verdict.name}` : ""} → deliver in ${userLang ?? "unknown"}`);
+			return { message: { ...msg, [META_KEY]: { ...(msg as any)[META_KEY], userLang: userLang ?? undefined } satisfies TranslatorMeta } };
 		}
 
 		if (msg.role !== "assistant") return;
@@ -692,12 +775,28 @@ export default function (pi: ExtensionAPI) {
 	// the transcript keeps the user-language deliveries. Runs regardless of
 	// `enabled`: the invariant belongs to the data, not the toggle.
 	pi.on("context", async (event: any, ctx: any) => {
+		// F3 reload: a fresh process has no detected language. Without this the
+		// first answer after a restart ships in the working language — the same
+		// silent-skip class as the machine-turn bug fixed in 6a325a5/d5f4fce.
+		if (enabled && userLang === null) {
+			for (let i = event.messages.length - 1; i >= 0; i--) {
+				const m: any = event.messages[i];
+				const lang = m?.role === "user" ? m?.[META_KEY]?.userLang : undefined;
+				if (typeof lang === "string" && lang) {
+					setLangState(lang);
+					dbg(`context: restored userLang ${lang} from the transcript`);
+					break;
+				}
+			}
+		}
 		let restored = 0;
 		let out = event.messages;
 		for (let i = 0; i < event.messages.length; i++) {
 			const msg = event.messages[i];
 			const meta: TranslatorMeta | undefined = msg?.[META_KEY];
-			if (!meta || (msg.role !== "user" && msg.role !== "assistant")) continue;
+			// Only assistant messages carry a restore today: the user side reads the
+			// original since F3, and its metadata (userLang) is state, not content.
+			if (!meta || msg.role !== "assistant") continue;
 			let content: any = undefined;
 			if (msg.role === "assistant" && Array.isArray(msg.content) && (typeof meta.original === "string" || meta.toolArgs)) {
 				// Sequential, not exclusive: one message could carry BOTH a
@@ -707,8 +806,6 @@ export default function (pi: ExtensionAPI) {
 				content = msg.content;
 				if (typeof meta.original === "string") content = replaceText(content, meta.original);
 				if (meta.toolArgs) content = content.map((b: any, j: number) => (meta.toolArgs![String(j)] === undefined ? b : { ...b, arguments: meta.toolArgs![String(j)] }));
-			} else if (msg.role === "user" && typeof meta.modelText === "string") {
-				content = typeof msg.content === "string" ? meta.modelText : replaceText(msg.content ?? [], meta.modelText);
 			}
 			if (content === undefined) continue;
 			if (out === event.messages) out = [...event.messages]; // copy-on-write; never mutate the session objects

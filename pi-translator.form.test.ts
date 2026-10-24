@@ -43,16 +43,19 @@ const DE_BATCH = [
 	"Nein, das reicht so",
 ];
 
+const USER_TEXT = "Soll das Depot Dividenden buchen? Bring es als Formular.";
+
 async function main() {
 	const handlers: Record<string, (e: any, c: any) => Promise<any>> = {};
 	const pi: any = { on: (ev: string, fn: any) => (handlers[ev] = fn), registerCommand: () => {} };
 	factory(pi);
 
 	const calls: string[] = [];
-	const counts = { prompt: 0, reply: 0, form: 0 };
+	const counts = { detect: 0, prompt: 0, reply: 0, form: 0 };
 	const DE_REPLY = { stopReason: "stop", content: [{ type: "text", text: "Kurz gesagt: Das Depot soll Dividenden verbuchen." }] };
 	let reply: any = DE_REPLY; // DRAFT-branch answer, per test
 	const EN_PROMPT = { stopReason: "stop", content: [{ type: "text", text: "Should the depot app book dividends in the future? Ask via form." }] };
+	let DETECT_ANSWER = "German"; // detector answer, per test
 	const ctx: any = {
 		cwd: "/tmp/pt-formtest", // no settings file → block-free, quiet
 		hasUI: false,
@@ -64,6 +67,8 @@ async function main() {
 			streamSimple: (_m: any, req: any) => ({
 				result: async () => {
 					const payload = req.messages[0].content as string;
+					// F3: detection is its own tiny call, recognised by its system prompt.
+					if (String(req.systemPrompt).includes("Which language is the USER REQUEST")) { counts.detect++; return { stopReason: "stop", content: [{ type: "text", text: DETECT_ANSWER }] }; }
 					calls.push(payload.slice(0, 30));
 					if (payload.startsWith("USER REQUEST:")) { counts.prompt++; return EN_PROMPT; }
 					if (payload.includes("SEGMENTS:")) { counts.form++; return { stopReason: "stop", content: [{ type: "text", text: JSON.stringify(DE_BATCH) }] }; }
@@ -75,11 +80,15 @@ async function main() {
 	};
 
 	const sections: Record<string, string> = {};
-	await t("user message translated, gate closes", async () => {
+	await t("user message reaches the model as written, language stored", async () => {
 		await handlers.before_agent_start({ prompt: "Soll das Depot Dividenden buchen? Bring es als Formular.", systemPromptOptions: { sections } }, ctx);
 		assert.ok(sections.pi_translator?.includes("English"), "guideline section injected");
-		const m = await handlers.message_end({ message: { role: "user", content: "Soll das Depot Dividenden buchen? Bring es als Formular." } }, ctx);
-		assert.ok(m?.message?.piTranslator?.modelText, "prompt translation attaches modelText");
+		const m = await handlers.message_end({ message: { role: "user", content: USER_TEXT } }, ctx);
+		assert.equal(counts.detect, 1, "exactly one detect call, no prompt translation");
+		assert.equal(counts.prompt, 0, "F3: the request is never translated");
+		assert.equal(m?.message?.piTranslator?.userLang, "German", "the delivery language is stored on the message");
+		assert.equal(m?.message?.content, USER_TEXT, "the user's own wording is untouched");
+		assert.equal(m?.message?.piTranslator?.modelText, undefined, "no working-language override is smuggled in");
 	});
 
 	let translatedForm: any;
@@ -98,11 +107,11 @@ async function main() {
 	});
 
 	await t("context handler restores English tool args for the model", async () => {
-		const userMsg = { role: "user", content: "Soll das Depot Dividenden buchen? Bring es als Formular.", piTranslator: { modelText: "Should the depot app book dividends in the future? Ask via form." } };
+		const userMsg = { role: "user", content: USER_TEXT, piTranslator: { userLang: "German" } };
 		const r = await handlers.context({ messages: [userMsg, translatedForm.message] }, ctx);
 		assert.ok(r?.messages, "context rewritten");
 		assert.equal(r.messages[1].content[0].arguments.questions[0].question, UI_ARGS.questions[0].question, "model sees English args");
-		assert.equal(r.messages[0].content, userMsg.piTranslator.modelText, "user modelText still restored");
+		assert.equal(r.messages[0].content, USER_TEXT, "F3: the user message is handed over as written — state, not content");
 		assert.equal(translatedForm.message.content[0].arguments.questions[0].question, DE_BATCH[0], "session object NOT mutated (transcript keeps German)");
 	});
 

@@ -229,6 +229,36 @@ async function main() {
 		reply = DE_REPLY;
 	});
 
+	await t("a timed-out call is not retried (the double-stall class)", async () => {
+		// The ceiling aborts the request; the endpoint then answers stopReason
+		// "error" (or "stop" with empty content). Labelled "transport" that was a
+		// fluke, so the retry paid the ceiling a SECOND time: the user watched 50 s
+		// of nothing for a call that had already failed at 25 (field report 20:19).
+		const draft = "A long enough draft that the ceiling is what ends this call at all.";
+		const saved = reply;
+		const savedEnv = process.env.PI_TRANSLATOR_CALL_TIMEOUT_MS;
+		process.env.PI_TRANSLATOR_CALL_TIMEOUT_MS = "40";
+		const hang = ctx.modelRegistry.streamSimple;
+		ctx.modelRegistry.streamSimple = () => ({
+			result: async () => {
+				counts.formulate++;
+				await new Promise((r) => setTimeout(r, 400));
+				return { stopReason: "error", content: [] };
+			},
+		});
+		try {
+			const before = counts.formulate;
+			const r = await handlers.message_end({ message: { role: "assistant", content: [{ type: "text", text: draft }] } }, ctx);
+			assert.equal(r, undefined, "the draft is delivered rather than withheld");
+			assert.equal(counts.formulate - before, 1, "one call — a slow model retried is a double stall");
+		} finally {
+			ctx.modelRegistry.streamSimple = hang;
+			reply = saved;
+			if (savedEnv === undefined) delete process.env.PI_TRANSLATOR_CALL_TIMEOUT_MS;
+			else process.env.PI_TRANSLATOR_CALL_TIMEOUT_MS = savedEnv;
+		}
+	});
+
 	await t("compaction summary reaches the model in the working language", async () => {
 		// pi builds the summary from the STORED (user-language) deliveries and never
 		// runs the summarizer through transformContext — without this the model

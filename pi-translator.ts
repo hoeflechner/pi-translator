@@ -353,6 +353,9 @@ const failed = (a: Attempt) => a.kind === "error" || a.kind === "reject";
 // undefined whenever the agent is not streaming, so without this a hanging
 // endpoint stalled the turn forever with nothing said at all.
 const CALL_TIMEOUT_MS = 25000;
+/** Read per call, not at module load: lets a test drive the timeout path
+ *  without waiting 25 s for it. */
+const callCeilingMs = () => Number(process.env.PI_TRANSLATOR_CALL_TIMEOUT_MS) || CALL_TIMEOUT_MS;
 
 // Translator call. reasoning "minimal": translation needs no thinking, and the
 // measured empty-completion class (01-findings §5) is a thinking-budget
@@ -369,7 +372,7 @@ async function callTranslator(ctx: any, model: any, systemPrompt: string, payloa
 	const timer = setTimeout(() => {
 		timedOut.v = true;
 		ctrl.abort();
-	}, CALL_TIMEOUT_MS);
+	}, callCeilingMs());
 	const relay = () => ctrl.abort();
 	ctx.signal?.addEventListener?.("abort", relay);
 	const opts: any = { signal: ctrl.signal };
@@ -397,13 +400,14 @@ async function translateOnce(
 ): Promise<Attempt> {
 	try {
 		const out = await callTranslator(ctx, model, systemPrompt, payload, reasoningUnsupported, timedOut);
-		if (out.stopReason === "error") return { kind: "error", why: "transport" };
+		if (out.stopReason === "error") return { kind: "error", why: timedOut.v ? "timeout" : "transport" };
 		const raw = (out.content as any[])
 			.filter((b) => b.type === "text")
 			.map((b) => b.text)
 			.join("")
 			.trim();
-		if (!raw) return { kind: "error", why: "transport" };
+		// Same class: an abort often yields stopReason "stop" with empty content.
+		if (!raw) return { kind: "error", why: timedOut.v ? "timeout" : "transport" };
 		// exact match only: pseudo-NONE answers are translation attempts
 		// (spec §2), never passthrough.
 		if (!guards.rejectNone && raw === "NONE") return { kind: "none" };

@@ -241,6 +241,18 @@ export function splitLanguageHeader(raw: string): { lang: string | null; text: s
 	return { lang: v.name, text: t.slice(i + 1).trim() };
 }
 
+/** Share of the DRAFT's sentences (>=6 words) that the formulation reproduces
+ *  verbatim. ratio cannot see this: a faithful re-derivation has ratio ~1.0 by
+ *  design, so "did it actually reword?" needs its own number. Measured basis:
+ *  0.61 with the old instruction, 0.31 with the current one (same 15 s). */
+export function verbatimShare(draft: string, out: string): number {
+	const norm = (x: string) => x.replace(/\s+/g, " ").trim();
+	const sentences = draft.split(/(?<=[.!?])\s+/).map(norm).filter((x) => x.split(" ").length >= 6);
+	if (!sentences.length) return 0;
+	const o = norm(out);
+	return sentences.filter((x) => o.includes(x)).length / sentences.length;
+}
+
 /** True when the DRAFT itself carries non-Latin script — the case scriptGuardOk
  *  cannot police (its union licenses the draft's own scripts), so it is logged
  *  instead: inherited class-A is a count, not a shrug (docs/06 R4/R7). */
@@ -589,6 +601,7 @@ export default function (pi: ExtensionAPI) {
 						lang: attempt.kind === "text" ? attempt.lang ?? null : null,
 						ratio: attempt.kind === "text" ? ratioOf(attempt.text, source) : null,
 						inherited_cjk: foreignScriptIn(guards.draft),
+						verbatim: attempt.kind === "text" ? Number(verbatimShare(guards.draft, attempt.text).toFixed(2)) : null,
 					}
 				: {}),
 		});

@@ -47,8 +47,30 @@ walk must read the durable branch) — no state to reload; the only surviving
 memory is `lastLang`, a per-process fallback for machine-triggered turns that
 carry no question, where guessing would be the older bug. Still live from that
 review: **R4** (log every decision — implemented), **R6** (no-comments clause
-and a defined noop — implemented), **R7** (thresholds and the gate script —
-open).
+and a defined noop — implemented).
+
+**R7 — the gate is now a script, not a wish.** `scripts/audit-gate.mjs
+[logfile] [--since <date>]` prints M1–M5 per worker label and exits 1 on any
+FALSIFIED; `scripts/audit-gate.test.mjs` pins them against a fixture with
+hand-computed values. R7 defined the population as `dir:"polish"`; F4 has one
+call per answer, so it is `dir:"reply"` rows with `mode:"formulate"` minus
+`verdict:"skip"` (a skip is not evidence about a model). The metrics as run:
+
+| | measure | threshold | why this number |
+|---|---|---|---|
+| M1 | class-A characters **introduced** by the polisher (CJK in `out`, `inherited_cjk` false, CJK targets excluded by `lang`) | >5% fails, 2–5% watch | above 5% the polisher is no better than the worker's own German (01 §4: 10–24% corrupted) |
+| M2 | `verdict:"noop"` / calls | >30% fails | the polisher does nothing — the weak-model signature this design names itself |
+| M3 | `reject`+`error`+`none` / calls | >15% fails | the guards are fighting the model |
+| M4 | call `ms` p90 | >60 s fails | the reply p90 it replaced was 72.1 s (01 §8) — the bet must be cheaper than the tail |
+| M5 | median `ratio` | >1.5 watch | manufactured filler creeping in before it is fatal |
+
+Under **100 calls** per label every share prints as `thin` and falsifies nothing
+— five turns must never put a model in the dock. Per-label, never global: a
+strong model's numbers do not vouch for the worker's. Class-A inherited from the
+draft is excluded from M1 by design (that is the drafting model's defect and the
+gate measures the polisher's), which is exactly why `inherited_cjk` is logged.
+Ran against today's log it reports `no formulate-mode reply rows` — correct, and
+the honest way to discover the host was never restarted.
 
 ## F3 — shipped same day as this document (owner decision)
 

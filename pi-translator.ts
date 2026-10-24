@@ -192,7 +192,7 @@ export function buildFormulatePrompt(workingName: string, append: string, target
 	return (
 		`You are the final formulation layer of an agent. You receive a QUESTION from a user and a DRAFT answer written by the agent in ${workingName} — the DRAFT may have drifted into another language.
 ${lang}
-- Re-derive the answer from the DRAFT's content: keep every fact, drop clumsy wording and wrong terms rather than copying them.
+- Rewrite the DRAFT sentence by sentence: keep every fact and leave nothing out, but do NOT reproduce any sentence verbatim, and do not describe the DRAFT — it is content to render, not a document to summarise.
 - Add nothing that is not in the DRAFT.
 - First line: the name of the language you answered in, in English (e.g. German). Second line onwards: the answer.
 - Nothing else: no comments about translating, no copy of the source, and never answer the QUESTION yourself.

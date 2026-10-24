@@ -107,7 +107,9 @@ t("formulate prompt: infer target from the QUESTION, or take an explicit one", (
 
 t("formulate prompt: re-derive, invent nothing, header, no monologue", () => {
 	const p = buildFormulatePrompt("English", "", null);
-	assert.ok(/Re-derive/i.test(p) && /content/i.test(p), "must ask for re-derivation, not copying");
+	assert.ok(/Rewrite the DRAFT sentence by sentence/i.test(p), "must ask for sentence-level rewriting: measured 61% verbatim sentences with the old bullet, 31% with this one (same 15 s, same tokens)");
+	assert.ok(/do NOT reproduce any sentence verbatim/i.test(p), "the copy clause");
+	assert.ok(/do not describe the DRAFT/i.test(p), "field report: the model wrote 'Der vorliegende Entwurf behandelt keinen…' — meta commentary about the draft, which differsFromSource cannot catch (skipped in formulate mode, R6)");
 	assert.ok(/Add nothing that is not in the DRAFT/i.test(p), "the only defence against manufactured filler (docs/06 R6)");
 	assert.ok(/First line: the name of the language/i.test(p), "must ask for the header line");
 	assert.ok(/no comments about translating/i.test(p), "must close the Latin↔Latin meta-commentary hole the differsFromSource skip opens");

@@ -234,6 +234,50 @@ async function main() {
 		reply = DE_REPLY;
 	});
 
+	await t("a lost placeholder gets one repair attempt that says what was lost", async () => {
+		// The draft contains one protected span (inline code) → masked to ⟦0⟧.
+		// The polisher's first answer drops it. Retrying byte-identical would
+		// reproduce the loss; retrying with the diagnosis is a different request.
+		const draft = "Start the daemon first: `pi-web-sessiond` owns the socket.";
+		const log = `/tmp/pt-repair-${process.pid}.jsonl`;
+		try {
+			unlinkSync(log);
+		} catch {
+			/* fresh */
+		}
+		const saved = reply;
+		const seen: string[] = [];
+		process.env.PI_TRANSLATOR_LOG = log;
+		try {
+			reply = {
+				stopReason: "stop",
+				content: [{ type: "text", text: "German\nDer Daemon besitzt den Socket — zuerst starten." }], // ⟦0⟧ gone
+			};
+			const orig = ctx.modelRegistry.streamSimple;
+			ctx.modelRegistry.streamSimple = (m: any, req: any, opts?: any) => {
+				const payload = String(req.messages[0].content);
+				seen.push(payload);
+				const fixed = payload.includes("ATTENTION:")
+					? { stopReason: "stop", content: [{ type: "text", text: "German\nDer Daemon besitzt den Socket — zuerst `⟦0⟧` starten." }] }
+					: reply;
+				return { result: async () => fixed };
+			};
+			const r = await handlers.message_end({ message: { role: "assistant", content: [{ type: "text", text: draft }] } }, ctx);
+			ctx.modelRegistry.streamSimple = orig;
+			assert.equal(seen.length, 2, "one repair attempt, no loop");
+			assert.match(seen[1], /ATTENTION:/, "the retry says what went wrong");
+			assert.match(seen[1], /Missing from your answer: ⟦0⟧/, "and names the lost placeholder");
+			assert.doesNotMatch(seen[0], /ATTENTION:/, "the first request was clean");
+			const delivered = r?.message?.content?.[0]?.text ?? "";
+			assert.match(delivered, /`pi-web-sessiond`/, "the protected span is back — the repair shipped, not the raw draft");
+			const rows = readFileSync(log, "utf-8").trim().split("\n").map((l) => JSON.parse(l));
+			assert.ok(rows.some((x) => x.placeholder_repair === true), "the audit row says a repair was attempted");
+		} finally {
+			reply = saved;
+			delete process.env.PI_TRANSLATOR_LOG;
+		}
+	});
+
 	await t("a timed-out call is not retried (the double-stall class)", async () => {
 		// The ceiling aborts the request; the endpoint then answers stopReason
 		// "error" (or "stop" with empty content). Labelled "transport" that was a

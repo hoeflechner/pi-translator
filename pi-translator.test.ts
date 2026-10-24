@@ -146,6 +146,18 @@ t("mask/unmask round-trips protected spans verbatim", () => {
 	assert.equal(back.text, src, "restored byte-identical");
 });
 
+t("unmask names the placeholders it lost, so the model can be told", () => {
+	const spans = ["`dockerd`", "/var/run/docker.sock", "`--pid=host`"];
+	const dropped = unmaskProtected("talks to ⟦0⟧ over the socket", spans);
+	assert.equal(dropped.ok, false);
+	assert.deepEqual(dropped.missing, [1, 2], "which two are gone");
+	assert.deepEqual(dropped.dups, [], "none repeated");
+	const doubled = unmaskProtected("a ⟦0⟧ b ⟦0⟧ c ⟦1⟧ d ⟦2⟧", spans);
+	assert.equal(doubled.ok, false);
+	assert.deepEqual(doubled.missing, []);
+	assert.deepEqual(doubled.dups, [0], "the twin is named");
+});
+
 t("unmask fails closed when the translator drops or duplicates a placeholder", () => {
 	const { masked, spans } = maskProtected("run `ls` now");
 	assert.equal(spans.length, 1);

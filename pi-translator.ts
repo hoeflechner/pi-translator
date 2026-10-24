@@ -128,8 +128,11 @@ export function maskProtected(text: string): { masked: string; spans: string[] }
 	return { masked, spans };
 }
 
-/** Unmask + completeness check: every placeholder must appear exactly once. */
-export function unmaskProtected(text: string, spans: string[]): { ok: boolean; text: string } {
+/** Unmask + completeness check: every placeholder must appear exactly once.
+ *  `missing`/`dups` name the offenders so the caller can tell the model what it
+ *  broke — a retry with the same bytes reproduces the same mistake, a retry with
+ *  the diagnosis is a different request (owner, 2026-10-24). */
+export function unmaskProtected(text: string, spans: string[]): { ok: boolean; text: string; missing: number[]; dups: number[] } {
 	const seen = new Array<number>(spans.length).fill(0);
 	const out = text.replace(/⟦(\d+)⟧/g, (whole, idx) => {
 		const i = Number(idx);
@@ -138,7 +141,7 @@ export function unmaskProtected(text: string, spans: string[]): { ok: boolean; t
 		return spans[i];
 	});
 	const ok = seen.every((n) => n === 1) && !/⟦\d+⟧/.test(out);
-	return { ok, text: ok ? out : text };
+	return { ok, text: ok ? out : text, missing: seen.map((n, i) => (n === 0 ? i : -1)).filter((i) => i >= 0), dups: seen.map((n, i) => (n > 1 ? i : -1)).filter((i) => i >= 0) };
 }
 
 /** Spec §3 {append}: general ("*") entries verbatim, per-language labeled. */
@@ -356,7 +359,7 @@ export function replaceText(content: any[], text: string): any[] {
  *  the model returns a language-name line before the answer. */
 type Guards = { question: string; draft: string; spans: string[]; rejectNone: boolean; extraAllowed?: string; skipDiffers?: boolean; skipScript?: boolean; header?: boolean };
 
-type Attempt = { kind: "none" } | { kind: "text"; text: string; lang?: string } | { kind: "error"; why: "transport" | "timeout" } | { kind: "reject"; guard: string };
+type Attempt = { kind: "none" } | { kind: "text"; text: string; lang?: string } | { kind: "error"; why: "transport" | "timeout" } | { kind: "reject"; guard: string; hint?: string };
 
 /** Anything but a usable translation or an explicit NONE. */
 const failed = (a: Attempt) => a.kind === "error" || a.kind === "reject";
@@ -442,7 +445,18 @@ async function translateOnce(
 		// (spec §2), never passthrough.
 		if (!guards.rejectNone && raw === "NONE") return { kind: "none" };
 		const restored = unmaskProtected(raw, guards.spans);
-		if (!restored.ok) return { kind: "reject", guard: "placeholders" }; // lost or duplicated ⟦n⟧
+		if (!restored.ok) {
+			// "you lost a placeholder" is actionable, and the model rarely loses the
+			// same one twice when it is told which one — so this rejection carries the
+			// diagnosis for translateWithRetry's single repair attempt.
+			const named = (list: number[]) => (list.length ? list.map((i) => `⟦${i}⟧`).join(", ") : "none");
+			const last = Math.max(0, guards.spans.length - 1);
+			return {
+				kind: "reject",
+				guard: "placeholders",
+				hint: `Your previous answer broke the placeholders. The DRAFT contains ${guards.spans.length} of them, ⟦0⟧…⟦${last}⟧, and your answer must contain EACH exactly once. Missing from your answer: ${named(restored.missing)}. Used more than once: ${named(restored.dups)}. Redo the answer and keep every placeholder in place.`,
+			};
+		}
 		// Forced target: the allowed-script set can only be derived from
 		// QUESTION ∪ DRAFT, so a legitimately forced non-Latin target (e.g.
 		// /translator Japanese with a Latin question) could never pass. The
@@ -584,12 +598,21 @@ export default function (pi: ExtensionAPI) {
 		let attempt = await translateOnce(ctx, translator.model, systemPrompt, payload, { ...guards, spans: masked.spans }, reasoningUnsupported, timedOut);
 		// retry only what could have been a fluke — see the Attempt comment
 		if (attempt.kind === "error" && attempt.why === "transport") attempt = await translateOnce(ctx, translator.model, systemPrompt, payload, { ...guards, spans: masked.spans }, reasoningUnsupported, timedOut);
+		// Losing a placeholder is not deterministic once the model is told WHICH one
+		// it lost: that request differs from the first, so "never retry a rejection"
+		// does not apply. Bounded — if the first attempt already ran most of the way
+		// to the ceiling the endpoint is slow, and a second call only doubles a stall
+		// the user is sitting through.
+		const repairHint = attempt.kind === "reject" && attempt.guard === "placeholders" ? attempt.hint : undefined;
+		const placeholderRepair = !!repairHint && Date.now() - t0 < callCeilingMs(!!guards.header) * 0.6;
+		if (placeholderRepair) attempt = await translateOnce(ctx, translator.model, systemPrompt, `${payload}\n\nATTENTION:\n${repairHint}`, { ...guards, spans: masked.spans }, reasoningUnsupported, timedOut);
 		logLine({
 			dir: direction,
 			model: translator.label,
 			ms: Date.now() - t0,
 			verdict: attempt.kind,
 			reason: attempt.kind === "reject" ? attempt.guard : attempt.kind === "error" ? attempt.why : undefined,
+			...(placeholderRepair ? { placeholder_repair: true } : {}),
 			in: source,
 			out: attempt.kind === "text" ? attempt.text : undefined,
 			// Formulate-mode metrics the falsification gate needs and nothing else

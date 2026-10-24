@@ -19,7 +19,6 @@ const THRESH = {
 	failed: { fail: 0.15 }, // >15%: the guards are fighting the model
 	p90ms: { fail: 60_000 }, // the reply p90 it replaces was 72.1s (01 §8) — the bet must be cheaper
 	ratio: { watch: 1.5 }, // median prose growth: manufactured filler creeping in
-	verbatim: { watch: 0.4, fail: 0.6 }, // share of draft sentences reproduced word-for-word. Basis: 0.61 = the copying prompt, 0.31 = the rewriting prompt (docs/06)
 
 };
 const MIN_CALLS = 100; // R7: below this the shares are noise, not a verdict
@@ -60,7 +59,10 @@ export function gate(rows) {
 			M3: share(m.M3, THRESH.failed, thin),
 			M4: m.M4 === null ? "n/a" : m.M4 > THRESH.p90ms.fail ? "FALSIFIED" : "ok",
 			M5: m.M5 === null ? "n/a" : m.M5 > THRESH.ratio.watch ? "watch" : "ok",
-			M6: share(m.M6, THRESH.verbatim, thin),
+			// Reported, never judged: the owner decided a re-used sentence is not a
+			// defect, so a copy rate above some line must not falsify anything. It stays
+			// because "did the polisher reword at all" is invisible in ratio.
+			M6: m.M6 === null ? "n/a" : "info",
 		};
 		m.falsified = Object.values(m.status).includes("FALSIFIED");
 		out.push(m);
@@ -104,7 +106,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 		console.log(`  M3 reject/error/none   ${pct(m.M3).padStart(6)}  ${m.status.M3}   (fail >${THRESH.failed.fail * 100}%)`);
 		console.log(`  M4 latency p90         ${m.M4 === null ? "  —  " : `${(m.M4 / 1000).toFixed(1)}s`}  ${m.status.M4}   (fail >${THRESH.p90ms.fail / 1000}s)`);
 		console.log(`  M5 median ratio        ${m.M5 === null ? "  —  " : m.M5.toFixed(2)}   ${m.status.M5}   (watch >${THRESH.ratio.watch})`);
-		console.log(`  M6 verbatim copied     ${pct(m.M6).padStart(6)}  ${m.status.M6}   (watch >${THRESH.verbatim.watch * 100}%, fail >${THRESH.verbatim.fail * 100}%)`);
+		console.log(`  M6 verbatim copied     ${pct(m.M6).padStart(6)}  ${m.status.M6}   (reported, not judged)`);
 		if (m.calls < MIN_CALLS) console.log(`  ⚠ under ${MIN_CALLS} calls — shares are reported but not verdicts ("thin")`);
 	}
 	const bad = res.filter((m) => m.falsified);

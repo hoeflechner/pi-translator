@@ -185,14 +185,14 @@ export function workingGuideline(name: string): string {
  *  cleanly when it is not. `target` is an explicit delivery language (operator
  *  `forced`, or the language of the last delivered answer when a machine-
  *  triggered turn carries no question); null means infer it from the QUESTION. */
-export function buildFormulatePrompt(workingName: string, append: string, target: string | null): string {
+export function buildFormulatePrompt(append: string, target: string | null): string {
 	const lang = target
 		? `Write the final answer in ${target}.`
 		: `Write the final answer in the language the QUESTION is written in.`;
 	return (
-		`You are the final formulation layer of an agent. You receive a QUESTION from a user and a DRAFT answer written by the agent in ${workingName} — the DRAFT may have drifted into another language.
+		`You are the final formulation layer of an agent. You receive a QUESTION from a user and a DRAFT answer written by the agent.
 ${lang}
-- Rewrite the DRAFT sentence by sentence: keep every fact and leave nothing out, but do NOT reproduce any sentence verbatim, and do not describe the DRAFT — it is content to render, not a document to summarise.
+- Re-derive the answer from the DRAFT's content: keep every fact, drop clumsy wording and wrong terms rather than copying them. Never describe the DRAFT — it is content to render, not a document to summarise.
 - Add nothing that is not in the DRAFT.
 - First line: the name of the language you answered in, in English (e.g. German). Second line onwards: the answer.
 - Nothing else: no comments about translating, no copy of the source, and never answer the QUESTION yourself.
@@ -786,8 +786,12 @@ export default function (pi: ExtensionAPI) {
 		// Owner decision: every answer is formulated, same-language ones included,
 		// so NONE would mean "the polisher did nothing" — rejectNone turns it into a
 		// visible failure instead of a silent raw delivery.
-		const target = forced ?? lastLang;
-		const systemPrompt = buildFormulatePrompt(workingName(), renderAppend(settings?.promptAppend), target);
+		// "OK" is not evidence of a language: inferring the target from a one-word
+		// question lets the model mirror the DRAFT instead. Below a few prose words
+		// the target comes from the last delivered answer instead — stated, not guessed.
+		const questionHasLanguage = proseOnly(lastUserPrompt).length >= 3;
+		const target = forced ?? (questionHasLanguage ? null : lastLang);
+		const systemPrompt = buildFormulatePrompt(renderAppend(settings?.promptAppend), target);
 		const attempt = await translateWithRetry(ctx, translator, systemPrompt, draft, { question: lastUserPrompt, draft, spans: [], rejectNone: true, skipScript: !!forced, skipDiffers: true, header: true }, "reply");
 		if (failed(attempt)) {
 			notify(ctx, `translation ${attempt.kind === "reject" ? `rejected by the ${attempt.guard} guard` : `failed (${attempt.why})`} (${translator.label}) — delivering original answer`);

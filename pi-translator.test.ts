@@ -98,18 +98,19 @@ t("renderAppend empty → empty string (no dangling header)", () => {
 
 /* F4 (docs/06): one always-on formulation call replaces detect + translate + gate */
 t("formulate prompt: infer target from the QUESTION, or take an explicit one", () => {
-	const auto = buildFormulatePrompt("English", "", null);
+	const auto = buildFormulatePrompt("", null);
 	assert.ok(/language the QUESTION is written in/i.test(auto), "auto mode infers the target");
-	const fixed = buildFormulatePrompt("English", "", "Deutsch");
+	const fixed = buildFormulatePrompt("", "Deutsch");
 	assert.ok(/Write the final answer in Deutsch\./.test(fixed), "an explicit target (forced or remembered) is stated, not inferred");
 	assert.ok(!/language the QUESTION is written in/i.test(fixed), "and the inference line is gone, not both");
 });
 
 t("formulate prompt: re-derive, invent nothing, header, no monologue", () => {
-	const p = buildFormulatePrompt("English", "", null);
-	assert.ok(/Rewrite the DRAFT sentence by sentence/i.test(p), "must ask for sentence-level rewriting: measured 61% verbatim sentences with the old bullet, 31% with this one (same 15 s, same tokens)");
-	assert.ok(/do NOT reproduce any sentence verbatim/i.test(p), "the copy clause");
-	assert.ok(/do not describe the DRAFT/i.test(p), "field report: the model wrote 'Der vorliegende Entwurf behandelt keinen…' — meta commentary about the draft, which differsFromSource cannot catch (skipped in formulate mode, R6)");
+	const p = buildFormulatePrompt("", null);
+	assert.ok(/Re-derive/i.test(p) && /keep every fact/i.test(p), "re-derivation is asked for; forbidding verbatim sentences was measured (61% vs 31%) and rejected by the owner: copying a sentence is not a defect");
+	assert.ok(/Never describe the DRAFT/i.test(p), "field report: the model wrote 'Der vorliegende Entwurf behandelt keinen…' — meta commentary about the draft, which differsFromSource cannot catch (skipped in formulate mode, R6)");
+	assert.ok(!/written by the agent in English/i.test(p), "the DRAFT shows the model what language it is in; naming it wastes a line (owner)");
+	assert.ok(!/drifted/i.test(p), "same reason");
 	assert.ok(/Add nothing that is not in the DRAFT/i.test(p), "the only defence against manufactured filler (docs/06 R6)");
 	assert.ok(/First line: the name of the language/i.test(p), "must ask for the header line");
 	assert.ok(/no comments about translating/i.test(p), "must close the Latin↔Latin meta-commentary hole the differsFromSource skip opens");
@@ -117,7 +118,7 @@ t("formulate prompt: re-derive, invent nothing, header, no monologue", () => {
 });
 
 t("promptAppend reaches the shipped formulate prompt", () => {
-	const p = buildFormulatePrompt("English", "\nStyle rules from the user:\nUse du.", null);
+	const p = buildFormulatePrompt("\nStyle rules from the user:\nUse du.", null);
 	assert.ok(p.includes("Use du."), "user style rules are appended verbatim");
 	assert.ok(p.indexOf("Style rules") > p.indexOf("First line"), "appended after the contract, not replacing it");
 });

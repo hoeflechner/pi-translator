@@ -32,12 +32,12 @@ assert.equal(m.M6, 0.3, "30% of draft sentences copied verbatim");
 assert.equal(m.M6, 0.3, "30% of draft sentences copied verbatim");
 assert.equal(m.M6, 0.3, "30% of draft sentences copied verbatim");
 assert.equal(m.langNull, 0);
-assert.deepEqual(m.status, { M1: "FALSIFIED", M2: "ok", M3: "ok", M4: "ok", M5: "ok", M6: "ok" });
+assert.deepEqual(m.status, { M1: "FALSIFIED", M2: "ok", M3: "ok", M4: "ok", M5: "ok", M6: "info" });
 assert.equal(m.falsified, true);
 
 // A clean population holds, and the two watch thresholds are reachable.
 const clean = gate([...many(100, { verdict: "text", out: "Sauberes Deutsch.", ratio: 1.1, verbatim: 0.2 })])[0];
-assert.deepEqual(clean.status, { M1: "ok", M2: "ok", M3: "ok", M4: "ok", M5: "ok", M6: "ok" });
+assert.deepEqual(clean.status, { M1: "ok", M2: "ok", M3: "ok", M4: "ok", M5: "ok", M6: "info" });
 assert.equal(clean.falsified, false);
 const padded = gate([...many(100, { verdict: "text", out: "x", ratio: 1.9 })])[0];
 assert.equal(padded.status.M5, "watch", "filler growth is visible before it is fatal");
@@ -47,8 +47,9 @@ const chatty = gate([...many(100, { verdict: "noop" })])[0];
 assert.equal(chatty.status.M2, "FALSIFIED", "a polisher that never polishes fails the bet");
 const dirty = gate([...many(100, { verdict: "text", out: "漢字" })])[0];
 assert.equal(dirty.status.M1, "FALSIFIED");
-const copier = gate([...many(100, { verdict: "text", out: "x", verbatim: 0.62 })])[0];
-assert.equal(copier.status.M6, "FALSIFIED", "a polisher that transcribes the draft is falsified (the 0.61 baseline)");
+const copier = gate([...many(100, { verdict: "text", out: "x", verbatim: 0.92 })])[0];
+assert.equal(copier.status.M6, "info", "copy rate is reported, never falsified (owner: re-using a sentence is fine)");
+assert.equal(copier.falsified, false);
 
 // Under the floor the shares print but are not verdicts — thin data must never
 // falsify a model on 5 turns.

@@ -599,13 +599,18 @@ export default function (pi: ExtensionAPI) {
 
 		if (msg.role === "user") {
 			ensureSettings(ctx);
-			questionIsWorkingLang = true; // reset each turn; the verdict below decides
 			const text = typeof msg.content === "string" ? msg.content : (msg.content ?? []).filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n\n");
+			// A user message without human text (queued marker, empty steer) carries no
+			// language evidence — resetting here would drop the verdict to "already
+			// English" and ship the answer untranslated, the same class as the
+			// before_agent_start bug fixed in 6a325a5.
+			if (!text.trim()) return;
+			questionIsWorkingLang = true; // reset each human turn; the verdict below decides
 			// Reply payload QUESTION must track the LATEST user text, not just the
 			// turn opener: a mid-turn German follow-up into an English-opening
 			// turn would otherwise be answered in English, silently (review MEDIUM).
-			if (text.trim()) lastUserPrompt = text;
-			if (!enabled || !text.trim()) return;
+			lastUserPrompt = text;
+			if (!enabled) return;
 			const translator = resolveTranslator(ctx);
 			if (!translator) {
 				questionIsWorkingLang = false; // unknown is NOT "already English" — let the reply attempt surface the breakage

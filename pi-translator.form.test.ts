@@ -6,6 +6,7 @@
  * is stubbed. Run: node --experimental-strip-types pi-translator.form.test.ts
  */
 import assert from "node:assert/strict";
+import { readFileSync, unlinkSync } from "node:fs";
 
 process.env.PI_TRANSLATOR = "1"; // enable without settings files (cwd has none)
 process.env.PI_TRANSLATOR_CWD_HACK = "1"; // silence linters about ordering
@@ -89,6 +90,40 @@ async function main() {
 		assert.equal(m?.message?.piTranslator?.userLang, "German", "the delivery language is stored on the message");
 		assert.equal(m?.message?.content, USER_TEXT, "the user's own wording is untouched");
 		assert.equal(m?.message?.piTranslator?.modelText, undefined, "no working-language override is smuggled in");
+	});
+
+	await t("sticky rule judges prose words, not code volume", async () => {
+		const before = DETECT_ANSWER;
+		DETECT_ANSWER = "English"; // detector says English: only real prose may flip the session
+		const codeHeavy = "Kurz gesagt, mach das.\n```bash\n" + Array.from({ length: 30 }, (_, i) => `echo step${i} && run --flag ${i}`).join("\n") + "\n```";
+		const m = await handlers.message_end({ message: { role: "user", content: codeHeavy } }, ctx);
+		assert.equal(m?.message?.piTranslator?.userLang, "German", "30 lines of English code must not flip a German session");
+		DETECT_ANSWER = before;
+	});
+
+	await t("a skipped delivery still writes an audit row (docs/06 R4)", async () => {
+		const log = `/tmp/pt-skip-${process.pid}.jsonl`;
+		try { unlinkSync(log); } catch { /* fresh */ }
+		process.env.PI_TRANSLATOR_LOG = log;
+		try {
+			// gate closed: the question is in the working language and nothing is forced
+			const savedLang = DETECT_ANSWER;
+			DETECT_ANSWER = "NONE";
+			const saved = await handlers.message_end({ message: { role: "user", content: "Just a plain English question here, ten words or so." } }, ctx);
+			assert.equal(saved?.message?.piTranslator?.userLang, "English", "a long working-language turn does switch");
+			DETECT_ANSWER = savedLang;
+			const r = await handlers.message_end({ message: { role: "assistant", content: [{ type: "text", text: "A working-language answer that needs no translation at all." }] } }, ctx);
+			assert.equal(r, undefined, "no delivery call when the question is in the working language");
+			const rows = readFileSync(log, "utf-8").trim().split("\n").map((l) => JSON.parse(l));
+			const skip = rows.find((x) => x.dir === "reply" && x.verdict === "skip");
+			assert.ok(skip, "the skip must be visible in the audit log, not only in the debug stream");
+			assert.equal(skip.reason, "question-in-working-language", "and say why it skipped");
+		} finally {
+			delete process.env.PI_TRANSLATOR_LOG;
+			// leave the shared instance in the German state the rest of the file expects
+			DETECT_ANSWER = "German";
+			await handlers.message_end({ message: { role: "user", content: USER_TEXT + " Bitte gründlich, mit Begründung und Beispielen." } }, ctx);
+		}
 	});
 
 	let translatedForm: any;

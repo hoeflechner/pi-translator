@@ -599,6 +599,26 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	// Restore the delivery language from the DURABLE branch, never from the live
+	// context array: after a compaction the stamped user messages are gone from
+	// the latter, which would silently downgrade a long German session to unknown
+	// (docs/06 R5 — the claim "compaction cannot erase the language" is only true
+	// against getBranch(), which is append-only).
+	pi.on("session_start", async (_event: any, ctx: any) => {
+		ensureSettings(ctx);
+		if (!enabled || userLang !== null) return;
+		const entries: any[] = ctx.sessionManager?.getBranch?.() ?? [];
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const m = entries[i]?.type === "message" ? entries[i].message : undefined;
+			const lang = m?.role === "user" ? m?.[META_KEY]?.userLang : undefined;
+			if (typeof lang === "string" && lang) {
+				setLangState(lang);
+				dbg(`session_start: restored userLang ${lang} from ${entries.length} durable entries`);
+				break;
+			}
+		}
+	});
+
 	pi.on("before_agent_start", async (event: any, ctx: any) => {
 		// Only a real user prompt may redefine the delivery language. A run woken by
 		// an injected custom message (delegation_result from the subagents extension)
@@ -711,7 +731,7 @@ export default function (pi: ExtensionAPI) {
 			const answer = await detectLanguage(ctx, translator, text);
 			const verdict = parseLanguageName(answer ?? "", workingName());
 			const name = verdict.kind === "working" ? workingName() : verdict.kind === "lang" ? verdict.name : null;
-			setLangState(nextUserLang(userLang, name, text.trim().split(/\s+/).filter(Boolean).length, forced));
+			setLangState(nextUserLang(userLang, name, proseOnly(text).split(/\s+/).filter(Boolean).length, forced));
 			logLine({ dir: "detect", model: translator.label, ms: Date.now() - t0, verdict: verdict.kind, lang: userLang, in: text });
 			dbg(`detect ${verdict.kind}${verdict.kind === "lang" ? ` ${verdict.name}` : ""} → deliver in ${userLang ?? "unknown"}`);
 			return { message: { ...msg, [META_KEY]: { ...(msg as any)[META_KEY], userLang: userLang ?? undefined } satisfies TranslatorMeta } };
@@ -729,8 +749,11 @@ export default function (pi: ExtensionAPI) {
 		const draft = textBlocks.map((b: any) => b.text).join("\n\n").trim();
 		// Empty bubbles are an upstream generation bug, not ours to mask.
 		if (!draft) return;
-		// Never silent: this skip ships the answer in the working language.
+		// Never silent: this skip ships the answer in the working language. It also
+		// has to land in the audit log — a skip that leaves no row makes the whole
+		// delivery population unreadable (docs/06 R4).
 		if (!lastUserPrompt) {
+			logLine({ dir: "reply", model: null, ms: 0, verdict: "skip", reason: "no-question", in: draft });
 			dbg("reply: no user prompt seen in this session yet → no delivery translation");
 			return;
 		}
@@ -738,6 +761,7 @@ export default function (pi: ExtensionAPI) {
 		// Reply gate: the prompt-translation verdict already told us the
 		// question is in the working language → nothing to translate to.
 		if (!forced && questionIsWorkingLang) {
+			logLine({ dir: "reply", model: null, ms: 0, verdict: "skip", reason: "question-in-working-language", in: draft });
 			dbg("reply: question in working language → no delivery translation");
 			return;
 		}
@@ -775,20 +799,6 @@ export default function (pi: ExtensionAPI) {
 	// the transcript keeps the user-language deliveries. Runs regardless of
 	// `enabled`: the invariant belongs to the data, not the toggle.
 	pi.on("context", async (event: any, ctx: any) => {
-		// F3 reload: a fresh process has no detected language. Without this the
-		// first answer after a restart ships in the working language — the same
-		// silent-skip class as the machine-turn bug fixed in 6a325a5/d5f4fce.
-		if (enabled && userLang === null) {
-			for (let i = event.messages.length - 1; i >= 0; i--) {
-				const m: any = event.messages[i];
-				const lang = m?.role === "user" ? m?.[META_KEY]?.userLang : undefined;
-				if (typeof lang === "string" && lang) {
-					setLangState(lang);
-					dbg(`context: restored userLang ${lang} from the transcript`);
-					break;
-				}
-			}
-		}
 		let restored = 0;
 		let out = event.messages;
 		for (let i = 0; i < event.messages.length; i++) {

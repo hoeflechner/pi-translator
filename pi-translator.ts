@@ -353,9 +353,19 @@ const failed = (a: Attempt) => a.kind === "error" || a.kind === "reject";
 // undefined whenever the agent is not streaming, so without this a hanging
 // endpoint stalled the turn forever with nothing said at all.
 const CALL_TIMEOUT_MS = 25000;
+// Formulate mode gets five minutes (owner request, 2026-10-24: "mach einfach mal
+// das timeout 5min und wir sehen was rauskommt"). It is not a translation any
+// more — the model retypes the whole answer, and measured worker speed is ~11 s
+// per 1000 output characters, so a 3k-char answer legitimately needs 30-60 s.
+// The 25 s ceiling STAYS for forms and summaries: those are short payloads where
+// a hang is a hang, and a 5-minute freeze before an ask_user form ships would be
+// a worse bug than the one this raises.
+const FORMULATE_TIMEOUT_MS = 300000;
 /** Read per call, not at module load: lets a test drive the timeout path
- *  without waiting 25 s for it. */
-const callCeilingMs = () => Number(process.env.PI_TRANSLATOR_CALL_TIMEOUT_MS) || CALL_TIMEOUT_MS;
+ *  without waiting for the real ceiling. */
+export function callCeilingMs(formulate: boolean): number {
+	return Number(process.env.PI_TRANSLATOR_CALL_TIMEOUT_MS) || (formulate ? FORMULATE_TIMEOUT_MS : CALL_TIMEOUT_MS);
+}
 
 // Translator call. reasoning "minimal": translation needs no thinking, and the
 // measured empty-completion class (01-findings §5) is a thinking-budget
@@ -365,14 +375,14 @@ const callCeilingMs = () => Number(process.env.PI_TRANSLATOR_CALL_TIMEOUT_MS) ||
 // The probe Set is PER SESSION (factory scope, passed in): a module-scoped Set
 // in a multi-session host process lets one session's transient network blip
 // permanently flip every user's sessions on that model (review MEDIUM).
-async function callTranslator(ctx: any, model: any, systemPrompt: string, payload: string, reasoningUnsupported: Set<string>, timedOut: { v: boolean }): Promise<any> {
+async function callTranslator(ctx: any, model: any, systemPrompt: string, payload: string, reasoningUnsupported: Set<string>, timedOut: { v: boolean }, ceilingMs: number): Promise<any> {
 	const key = `${model.provider}/${model.id}`;
 	const request = { systemPrompt, messages: [{ role: "user", timestamp: Date.now(), content: payload }] };
 	const ctrl = new AbortController();
 	const timer = setTimeout(() => {
 		timedOut.v = true;
 		ctrl.abort();
-	}, callCeilingMs());
+	}, ceilingMs);
 	const relay = () => ctrl.abort();
 	ctx.signal?.addEventListener?.("abort", relay);
 	const opts: any = { signal: ctrl.signal };
@@ -399,7 +409,7 @@ async function translateOnce(
 	timedOut: { v: boolean },
 ): Promise<Attempt> {
 	try {
-		const out = await callTranslator(ctx, model, systemPrompt, payload, reasoningUnsupported, timedOut);
+		const out = await callTranslator(ctx, model, systemPrompt, payload, reasoningUnsupported, timedOut, callCeilingMs(!!guards.header));
 		if (out.stopReason === "error") return { kind: "error", why: timedOut.v ? "timeout" : "transport" };
 		const raw = (out.content as any[])
 			.filter((b) => b.type === "text")

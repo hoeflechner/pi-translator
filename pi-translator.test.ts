@@ -3,7 +3,7 @@
  * runtime. Run: node --experimental-strip-types pi-translator.test.ts
  */
 import assert from "node:assert/strict";
-import { proseOnly, scriptsOf, scriptGuardOk, lengthOk, renderAppend, buildPromptTranslatePrompt, workingGuideline, maskProtected, unmaskProtected, differsFromSource, replaceText, collectUiStrings, applyUiStrings, parseBatchReply, buildBatchTranslatePrompt, buildFormulatePrompt, parseLanguageName, canonicalLangName, splitLanguageHeader, normText, ratioOf } from "./pi-translator.ts";
+import { proseOnly, scriptsOf, scriptGuardOk, lengthOk, renderAppend, buildPromptTranslatePrompt, workingGuideline, maskProtected, unmaskProtected, differsFromSource, replaceText, collectUiStrings, applyUiStrings, parseBatchReply, buildBatchTranslatePrompt, buildFormulatePrompt, parseLanguageName, canonicalLangName, splitLanguageHeader, normText, ratioOf, callCeilingMs } from "./pi-translator.ts";
 
 let n = 0;
 const t = (name: string, fn: () => void) => {
@@ -348,6 +348,21 @@ t("the header line never survives into the delivered text", () => {
 t("noop detection is normalised equality, not a similarity threshold", () => {
 	assert.equal(normText("  Das\nist\tgut. "), normText("Das ist gut."));
 	assert.notEqual(normText("Das ist gut."), normText("Das ist gut!"), "one edit is not a noop — a % threshold would reject light reformulation");
+});
+
+t("the 5-minute ceiling belongs to formulate mode only", () => {
+	const saved = process.env.PI_TRANSLATOR_CALL_TIMEOUT_MS;
+	delete process.env.PI_TRANSLATOR_CALL_TIMEOUT_MS;
+	try {
+		assert.equal(callCeilingMs(true), 300_000, "formulate: five minutes — the model retypes the whole answer");
+		assert.equal(callCeilingMs(false), 25_000, "forms and summaries keep 25 s: a short payload that hangs is a hang");
+		process.env.PI_TRANSLATOR_CALL_TIMEOUT_MS = "40";
+		assert.equal(callCeilingMs(true), 40, "the test seam wins over both");
+		assert.equal(callCeilingMs(false), 40);
+	} finally {
+		if (saved === undefined) delete process.env.PI_TRANSLATOR_CALL_TIMEOUT_MS;
+		else process.env.PI_TRANSLATOR_CALL_TIMEOUT_MS = saved;
+	}
 });
 
 t("ratioOf reports prose growth for the invented-filler metric", () => {

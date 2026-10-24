@@ -117,6 +117,7 @@ async function main() {
 			assert.ok(noop, "and the audit log says so (R6/R7 M2 — this is the weak-model signature)");
 			assert.equal(noop.mode, "formulate");
 			assert.equal(noop.lang, "English", "the header is parsed even on a noop");
+			assert.match(String(noop.rev), /^[0-9a-f]{7}$/, "every row names the build that wrote it — which code a session runs was unanswerable all day");
 		} finally {
 			reply = savedReply;
 			delete process.env.PI_TRANSLATOR_LOG;

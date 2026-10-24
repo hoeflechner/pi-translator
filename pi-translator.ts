@@ -1,30 +1,65 @@
 /**
- * pi-translator v2 — the agent works ONLY in the working language (English by
- * default), and the model context stays 100% working language in BOTH
- * directions, while the user sees their own language everywhere:
+ * pi-translator v3 — the agent works in the working language (English by
+ * default) and the user reads their own. Since F3/F4 the user's text reaches
+ * the model AS WRITTEN: no prompt translation, no detector call. What remains
+ * is one context-free formulation call per final answer:
  *
- *   user types German  ──prompt translation──▶ model reads English draft
- *   model drafts English ──reply translation──▶ transcript + UI show German
- *   before every LLM call, `context` restores the English originals
- *   (embedded as message metadata) → the model never reads target language.
+ *   user types German  ───────────────────────▶ model reads German (untouched)
+ *   model drafts (any language) ─formulate─▶ transcript + UI show the reader's
+ *                                            language, always — same-language
+ *                                            drafts are re-derived, not passed
+ *   before every LLM call, `context` restores the agent's OWN working-language
+ *   drafts and tool arguments (F1) → the model never reads back its own output
+ *   through the target language.
  *
- * Why: the locally served ultra-sparse MoE model corrupts German GENERATION
- * in long contexts (measured 10%→24% artifacts by context quartile) and is
- * clean in English.
- * Spec docs/03 + upgrade plan docs/05 (F1 context-restore, F2 prompt
- * translation, F3 placeholder protection, F4 original, F5 debug log).
- * No external MT. No detector: the translator LLM identifies languages
- * itself and answers "NONE" for same-language passthrough.
+ * The formulation answers with the language name on its first line; that header
+ * is parsed and stripped before the guards and before delivery. Guards: the
+ * one attempt per answer, placeholder masking (+ one named repair attempt),
+ * script, length ceiling/floor, noop detection — see docs/06 for the matrix.
+ *
+ * Why: the locally served ultra-sparse MoE model corrupts German GENERATION in
+ * long contexts (measured 10%→24% artifacts by context quartile, 01 §4) and is
+ * clean in English. Its quality as a POLISHER is a separate, measured question:
+ * scripts/audit-gate.mjs, M1-M6 per model label.
+ * Spec docs/03 + docs/05; v3 design and decisions docs/06; measurements 01 §8.
+ * No external MT. The translator model is the agent's own model unless
+ * `model` is set.
  *
  * Boot: PI_TRANSLATOR=1, or a "pi-translator" block in settings.
  * Per session: /translator [on|off|auto|<language name>], /translator-original.
+ * Reload after editing this file: /reload (extension code is read per session
+ * start — a running session keeps its copy forever otherwise).
  * Env: PI_TRANSLATOR_WORKING, PI_TRANSLATOR_TARGET, PI_TRANSLATOR_MODEL,
- *      PI_TRANSLATOR_DEBUG=1, PI_TRANSLATOR_LOG=<file.jsonl>.
+ *      PI_TRANSLATOR_DEBUG=1, PI_TRANSLATOR_LOG=<file.jsonl>,
+ *      PI_TRANSLATOR_CALL_TIMEOUT_MS (test seam for the call ceiling).
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { appendFileSync, chmodSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+/** Which build wrote this audit row. Deciding whether a session runs reloaded
+ *  code cost hours today — every spawned or reloaded instance reads the file
+ *  from disk at its own start, so "did the fix land?" was unanswerable from the
+ *  log. Two reads of the installed package's own .git, no subprocess at load. */
+const REVISION: string | null = (() => {
+	const git = join(dirname(fileURLToPath(import.meta.url)), ".git");
+	try {
+		const head = readFileSync(join(git, "HEAD"), "utf8").trim();
+		const ref = /^ref: (.+)$/.exec(head);
+		if (ref) return readFileSync(join(git, ref[1]), "utf8").trim().slice(0, 7);
+		return head.slice(0, 7); // detached HEAD
+	} catch {
+		try {
+			const packed = readFileSync(join(git, "packed-refs"), "utf8");
+			const m = /^([0-9a-f]{40}) refs\/heads\/main$/m.exec(packed);
+			return m ? m[1].slice(0, 7) : null;
+		} catch {
+			return null; // installed without .git — no revision, still logging
+		}
+	}
+})();
 
 // shortcut: names for naming the working/forced language in the prompt only;
 // raw code is the fallback for anything unlisted. Not a target-language table.
@@ -529,7 +564,7 @@ export default function (pi: ExtensionAPI) {
 			// appendFileSync does not create the parent dir and the catch below would
 			// swallow the ENOENT, so a deleted log dir would mean silent no-logging.
 			mkdirSync(dirname(file), { recursive: true });
-			appendFileSync(file, JSON.stringify({ ts: new Date().toISOString(), ...rec }) + "\n", { mode: 0o600 });
+			appendFileSync(file, JSON.stringify({ ts: new Date().toISOString(), rev: REVISION, ...rec }) + "\n", { mode: 0o600 });
 			if (!chmoddedLogs.has(file)) {
 				try {
 					chmodSync(file, 0o600);

@@ -361,6 +361,14 @@ const CALL_TIMEOUT_MS = 25000;
 // a hang is a hang, and a 5-minute freeze before an ask_user form ships would be
 // a worse bug than the one this raises.
 const FORMULATE_TIMEOUT_MS = 300000;
+// Thinking level for the formulation call. "minimal" is NOT a level this class
+// of endpoint serves (field: "Unexpected reasoning effort minimal. Supported
+// types are xhigh (default), medium, and low") — every request was rejected and
+// the probe retry landed on xhigh, i.e. 12,788 completion tokens for 6,700
+// characters. Ask for a level that exists. "low"/"medium" answer in 9-15 s but
+// COPY the draft (ratio 1.00, ~1,850 tok) instead of re-deriving it, so the
+// level is the polish knob: measured via verdict:"noop" per label in the gate.
+const FORMULATE_REASONING = "medium";
 /** Read per call, not at module load: lets a test drive the timeout path
  *  without waiting for the real ceiling. */
 export function callCeilingMs(formulate: boolean): number {
@@ -375,7 +383,7 @@ export function callCeilingMs(formulate: boolean): number {
 // The probe Set is PER SESSION (factory scope, passed in): a module-scoped Set
 // in a multi-session host process lets one session's transient network blip
 // permanently flip every user's sessions on that model (review MEDIUM).
-async function callTranslator(ctx: any, model: any, systemPrompt: string, payload: string, reasoningUnsupported: Set<string>, timedOut: { v: boolean }, ceilingMs: number): Promise<any> {
+async function callTranslator(ctx: any, model: any, systemPrompt: string, payload: string, reasoningUnsupported: Set<string>, timedOut: { v: boolean }, ceilingMs: number, reasoning: string): Promise<any> {
 	const key = `${model.provider}/${model.id}`;
 	const request = { systemPrompt, messages: [{ role: "user", timestamp: Date.now(), content: payload }] };
 	const ctrl = new AbortController();
@@ -386,7 +394,7 @@ async function callTranslator(ctx: any, model: any, systemPrompt: string, payloa
 	const relay = () => ctrl.abort();
 	ctx.signal?.addEventListener?.("abort", relay);
 	const opts: any = { signal: ctrl.signal };
-	if (!reasoningUnsupported.has(key)) opts.reasoning = "minimal";
+	if (!reasoningUnsupported.has(key)) opts.reasoning = reasoning;
 	try {
 		const out = await ctx.modelRegistry.streamSimple(model, request, opts).result();
 		const text = (out.content as any[]).filter((b) => b.type === "text").map((b) => b.text).join("").trim();
@@ -409,7 +417,7 @@ async function translateOnce(
 	timedOut: { v: boolean },
 ): Promise<Attempt> {
 	try {
-		const out = await callTranslator(ctx, model, systemPrompt, payload, reasoningUnsupported, timedOut, callCeilingMs(!!guards.header));
+		const out = await callTranslator(ctx, model, systemPrompt, payload, reasoningUnsupported, timedOut, callCeilingMs(!!guards.header), guards.header ? FORMULATE_REASONING : "minimal");
 		if (out.stopReason === "error") return { kind: "error", why: timedOut.v ? "timeout" : "transport" };
 		const raw = (out.content as any[])
 			.filter((b) => b.type === "text")

@@ -52,6 +52,7 @@ async function main() {
 	factory(pi);
 
 	const calls: string[] = [];
+	const seenOpts: any[] = [];
 	const counts = { formulate: 0, prompt: 0, reply: 0, form: 0 };
 	// Formulate mode answers "<language>\n<text>" — the header must never reach the user.
 	const DE_REPLY = { stopReason: "stop", content: [{ type: "text", text: "German\nKurz gesagt: Das Depot soll Dividenden verbuchen." }] };
@@ -65,10 +66,10 @@ async function main() {
 		model: { provider: "stub", id: "m" },
 		modelRegistry: {
 			find: () => null,
-			streamSimple: (_m: any, req: any) => ({
+			streamSimple: (_m: any, req: any, opts?: any) => ({
 				result: async () => {
 					const payload = req.messages[0].content as string;
-					if (String(req.systemPrompt).includes("final formulation layer")) { counts.formulate++; return reply; }
+					if (String(req.systemPrompt).includes("final formulation layer")) { counts.formulate++; seenOpts.push(opts); return reply; }
 					calls.push(payload.slice(0, 30));
 					if (payload.startsWith("USER REQUEST:")) { counts.prompt++; return EN_PROMPT; }
 					if (payload.includes("SEGMENTS:")) { counts.form++; return { stopReason: "stop", content: [{ type: "text", text: JSON.stringify(DE_BATCH) }] }; }
@@ -96,6 +97,10 @@ async function main() {
 		assert.equal(delivered, "Kurz gesagt: Das Depot soll Dividenden verbuchen.", "the language-name line is stripped");
 		assert.ok(!/^German\b/m.test(delivered), "no header line in what the user reads");
 		assert.equal(r.message.piTranslator.original, "In short: the depot should book dividends.", "the draft stays reachable for the model (F1)");
+		// "minimal" is not a thinking level this class of endpoint serves — asking
+		// for it cost a rejected request plus a probe retry onto xhigh (12,788
+		// completion tokens for 6,700 chars). Ask for a level that exists.
+		assert.equal(seenOpts.at(-1)?.reasoning, "medium", "formulate asks for a supported thinking level");
 	});
 
 	await t("a formulation that changed nothing is a logged noop, not a silent pass", async () => {

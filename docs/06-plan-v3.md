@@ -1,8 +1,10 @@
-# 06 — v3 plan: stored user language, repair-polish mode, optional prompt passthrough
+# 06 — v3: what shipped, and the decisions behind it
 
-**STATUS 2026-10-24: F3 and F4 IMPLEMENTED. No pre-start call and no delivery
-gate remain: every answer goes through one always-on formulation call. F2's
-repair semantics are absorbed into it; F1 as a gate design is dead.**
+**STATUS 2026-10-24: F3 and F4 IMPLEMENTED — this is the current design. No
+pre-start call and no delivery gate remain: every answer goes through one
+always-on formulation call. F1 as a gate design is dead and F2's repair
+semantics were absorbed into that call; their sections stay below as the
+reasoning, marked as such.**
 
 ## F4 — the gate died with the thing it gated (owner decisions, same day)
 
@@ -150,6 +152,10 @@ Owner policy decisions (2026-10-24), binding for this plan:
 
 ## F1 — stored user language
 
+> **Superseded by F4.** The stored `userLang` existed to gate delivery; there is
+> no gate. The only surviving memory is `lastLang`, used when a question-less
+> machine turn needs a target. Read this section as the argument that led there.
+
 State today is *derived per turn* from two variables and dies with the
 process. v3 makes it data.
 
@@ -187,6 +193,11 @@ process. v3 makes it data.
 
 ## F2 — repair-polish mode (the adopted half of proposal 3)
 
+> **Superseded by F4.** Its repair prompt, guards and `dir:"polish"` rows never
+> shipped as a separate mode: the single formulate call always runs, so nothing
+> has to *trigger*. The guard matrix below is still the reference — read
+> `dir:"polish"` as `mode:"formulate"`.
+
 - **Trigger**: the reply branch detects a draft that is **not** in the
   working language — the case that today ships raw (55 % on the weak worker).
   Detection reuses the F1 language header, or a coarse script check over
@@ -216,6 +227,9 @@ process. v3 makes it data.
 | `differsFromSource` | keep | **skip** | a same-language re-formulation shares far more than 60 % of word forms with its source *by construction*; keeping it rejects correct polish constantly. The hole it opens is the Latin↔Latin meta-commentary incident (`05-plan-v2.md` Deviations) — in polish mode a meta/no-op output degrades to delivering the draft, i.e. today's behaviour: cosmetic loss, no correctness loss |
 
 ## F3 — `translatePrompt: false` (the deferred half of proposal 1)
+
+> **Superseded: shipped, then deleted together with the feature it toggled.** No
+> flag exists; deleting prompt translation *is* the revert story.
 
 Opt-in, default `true`. When off: skip the F2 prompt call, write no
 `modelText` metadata, and let the model read the user's original text.

@@ -1,5 +1,8 @@
 # 03 — Implementation spec: `pi-translator` (generic, any target language)
 
+> **HISTORY (v1).** Describes one call doing detection + translation with a
+> `NONE` passthrough. Neither exists since v3 — see `06-plan-v3.md`.
+
 Implements the mechanism verified in 02 — one context-free translator call
 that **detects the target language itself**. No detector, no language
 tables, no language-specific prompt text, no harvesting.

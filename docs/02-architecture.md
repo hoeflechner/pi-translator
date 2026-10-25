@@ -1,5 +1,9 @@
 # 02 — Architecture & pi extension API ground truth
 
+> The pi extension-API ground truth below is still accurate and load-bearing.
+> The "mechanism verified" description is v1 history — current design:
+> `06-plan-v3.md`.
+
 ## Mechanism (verified end-to-end 2026-10-10)
 
 ```

@@ -1,5 +1,9 @@
 # 05 — v2 plan: 100%-English context, prompt translation, adopted UX
 
+> **HISTORY (v2).** Prompt translation and the 100%-English-context invariant
+> were deleted by v3 (F3/F4). Kept because v3's decisions are argued against the
+> measurements recorded here — current design: `06-plan-v3.md`.
+
 **STATUS 2026-10-10: F1–F5 implemented and drilled; F6 parked. Deviations
 and live findings at the bottom.**
 

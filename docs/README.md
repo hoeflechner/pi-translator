@@ -2,8 +2,10 @@
 
 **Status: v3 F3+F4 IMPLEMENTED (2026-10-24) — no pre-start call, no delivery
 gate: the user's text reaches the model as written and every answer is
-formulated by one context-free call. v1 spec: `03-design-language-tail.md`;
-v2: `05-plan-v2.md`; measurements: `01-findings.md` §8; v3: `06-plan-v3.md`.**
+formulated by one context-free call. Current design: `06-plan-v3.md`;
+measurements: `01-findings.md` §8. `03-design-language-tail.md` (v1) and
+`05-plan-v2.md` (v2) are **history** — they describe prompt translation and the
+`NONE` passthrough, both of which no longer exist.**
 Concept: the agent always **works in the machine's language** (English by
 default — its strongest token region). Since **F4** the user's own text is
 **not** translated before the model sees it: the 100%-working-language
@@ -41,35 +43,41 @@ in a fresh context. That removes the entire failure regime.
 |---|---|
 | `01-findings.md` | All measured evidence: session analysis, model facts, dose-response, probes, root causes, known upstream issues, empty-bubble bug |
 | `02-architecture.md` | Chosen mechanism + exact pi extension API ground truth (verified signatures, v1 test log) |
-| `03-design-language-tail.md` | **The implementation spec**: single context-free translator call doing detection + translation, generic validation, config, test plan, open questions |
-| `05-plan-v2.md` | **v2 plan**: 100%-English model context (context-restore), prompt translation, placeholder protection, adopted UX from prior art, rejected options, naming situation |
-| `06-plan-v3.md` | **v3 (2026-10-24)**: F3 shipped — prompt translation deleted in favour of a language-detect call + stored `userLang`; F1/F2 design-only: stored user language as message metadata, repair-polish mode for drifted drafts, `translatePrompt` opt-in, guard matrix, falsification gate for the translator-model decision, deploy order |
+| `03-design-language-tail.md` | **History (v1)**: the original single context-free call doing detection + translation, validation, config, test plan. Its `NONE` passthrough and detection instruction **no longer exist** |
+| `05-plan-v2.md` | **History (v2)**: 100%-English model context (context-restore), prompt translation, placeholder protection, adopted UX, rejected options. Prompt translation and the 100%-English invariant were **deleted by v3** — kept because the decisions below are argued against its measurements |
+| `06-plan-v3.md` | **Current design (2026-10-24)**: F3 + F4 shipped — prompt translation and the detect call both deleted, one always-on formulation call per answer with a parsed language header, the guard matrix, the owner decisions (always reformulate; agent model as polisher), the falsification gate and its M1–M6 thresholds, what each earlier review finding became, deploy order |
 
-## Quickstart (verified commands, 2026-10-10)
+## Quickstart (verified commands)
 
-The implementation lives at the repo root: `pi-translator.ts` (+ unit test
-`pi-translator.test.ts`). The user-facing README is one level up.
+The implementation lives at the repo root: `pi-translator.ts`,
+`pi-translator.test.ts` (34 unit), `pi-translator.form.test.ts` (14 async
+integration over the real factory with a mocked model), and
+`scripts/audit-gate.mjs` (the falsification gate).
 
 ```bash
 cd pi-translator
 
-# unit tests (no LLM, no pi runtime): spec §6.1 + §6.7
-node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON pi-translator.test.ts
+# unit + integration tests (no LLM, no pi runtime)
+node --experimental-strip-types pi-translator.test.ts
+node --experimental-strip-types pi-translator.form.test.ts
+node scripts/audit-gate.test.mjs
 
 # load smoke
-pi --extension ./pi-translator.ts --model <provider>/<clean-model> \
+pi --extension ./pi-translator.ts --model <provider>/<model> \
    --print "Reply with exactly: extension-load-ok"
 
-# full round-trip: German question → English working draft → German delivery
-PI_TRANSLATOR=1 pi --extension ./pi-translator.ts --model <provider>/<clean-model> \
+# round-trip: German question, draft in any language, formulated German delivery
+PI_TRANSLATOR=1 PI_TRANSLATOR_LOG=/tmp/pt.jsonl pi --extension ./pi-translator.ts \
+   --model <provider>/<model> \
    --print "Was ist ein Port-Konflikt? Antworte in genau zwei Sätzen."
+node scripts/audit-gate.mjs /tmp/pt.jsonl      # verdict per model label
 ```
 
 Add `PI_TRANSLATOR_DEBUG=1` to any run to see the tail's decisions on stderr
-(`translated` / `passthrough` / `fallback`). Config precedence is
-env > settings > defaults; the `pi-translator` settings block lives in
-`{cwd}/.pi/settings.json` (a working `du`-rule example is committed there)
-or `~/.pi/agent/settings.json`. A configured block enables the tail even
+(e.g. `reply formulated (German via …)`, `formulation changed nothing`, `delivering as written`). Config precedence
+is env > settings > defaults; the `pi-translator` settings block lives in
+`{cwd}/.pi/settings.json` (a working `du`-rule example is committed there) or
+`~/.pi/agent/settings.json`. A configured block enables the tail even
 without `PI_TRANSLATOR=1`.
 
 ## Archived v1 (German-specific)

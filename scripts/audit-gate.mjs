@@ -57,8 +57,11 @@ export function gate(rows) {
 			M1: share(m.M1, THRESH.classA, thin),
 			M2: share(m.M2, THRESH.noop, thin),
 			M3: share(m.M3, THRESH.failed, thin),
-			M4: m.M4 === null ? "n/a" : m.M4 > THRESH.p90ms.fail ? "FALSIFIED" : "ok",
-			M5: m.M5 === null ? "n/a" : m.M5 > THRESH.ratio.watch ? "watch" : "ok",
+			// A single observation has no p90 — one slow call must not reopen the model
+			// decision (field: one 168.5 s local/smart row declared a population of one
+			// FALSIFIED while every share metric next to it correctly said "thin").
+			M4: m.M4 === null ? "n/a" : thin ? "thin" : m.M4 > THRESH.p90ms.fail ? "FALSIFIED" : "ok",
+			M5: m.M5 === null ? "n/a" : thin ? "thin" : m.M5 > THRESH.ratio.watch ? "watch" : "ok",
 			// Reported, never judged: the owner decided a re-used sentence is not a
 			// defect, so a copy rate above some line must not falsify anything. It stays
 			// because "did the polisher reword at all" is invisible in ratio.
@@ -85,6 +88,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 	const val = (flag) => (args.includes(flag) ? args[args.indexOf(flag) + 1] : undefined);
 	const since = val("--since") ? Date.parse(val("--since")) : 0;
 	const rev = val("--rev"); // compare prompt/code variants: the rev field is in every row
+	// Comma-separated: a commit that touches only the gate or the docs produces a
+	// new rev with an identical polish path, and splitting it off would fragment
+	// one design variant into two populations that are each too thin to judge.
+	const revs = rev ? rev.split(",").map((s) => s.trim()).filter(Boolean) : null;
 	const flagvals = [val("--since"), val("--rev")].filter((v) => v !== undefined);
 	const file = args.find((a) => !a.startsWith("--") && !flagvals.includes(a)) ?? "/data/bernhard/.pi/pi-translator.jsonl";
 	const rows = readFileSync(file, "utf8")
@@ -97,7 +104,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 				return null;
 			}
 		})
-		.filter((r) => r && (!since || Date.parse(r.ts) >= since) && (!rev || String(r.rev) === rev));
+		.filter((r) => r && (!since || Date.parse(r.ts) >= since) && (!revs || revs.includes(String(r.rev))));
 	const res = gate(rows);
 	if (!res.length) {
 		console.log(`no formulate-mode reply rows in ${file} — nothing measured (pre-F4 log, or the host was never restarted)`);

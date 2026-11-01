@@ -93,5 +93,17 @@ const b = cli(["--rev", "bbbbbbb"]);
 assert.equal(b.code, 1, "the bad version alone still falsifies");
 assert.match(b.out, /\(100 calls/, "its rows are its own, not the other rev's");
 assert.match(cli(["--rev", "ccccccc"]).out, /nothing measured/, "an unknown rev says so instead of reporting 0%");
+// One design variant can span several revs (a gate-only commit changes no polish
+// path) — splitting per rev would leave two populations too thin to judge.
+assert.match(cli(["--rev", "aaaaaaa,bbbbbbb"]).out, /\(200 calls/, "--rev takes a list: one variant, several builds");
+
+// Latency is a share too: one slow call is not a p90. A single 168.5 s row must
+// read "thin", and only a full population may falsify the model decision.
+const oneSlow = gate([row({ verdict: "text", out: "x", ms: 168_513, model: "local/smart" })]);
+assert.equal(oneSlow[0].status.M4, "thin", "one observation has no p90");
+assert.equal(oneSlow[0].falsified, false, "and must not reopen the model decision");
+const manySlow = gate(many(100, { verdict: "text", out: "x", ms: 168_513, model: "local/smart" }));
+assert.equal(manySlow[0].status.M4, "FALSIFIED", "a hundred of them is a verdict");
+assert.equal(manySlow[0].falsified, true);
 
 console.log("audit-gate.test.mjs: all assertions passed");

@@ -119,9 +119,11 @@ falsification gate, and it runs against the audit log:
 node scripts/audit-gate.mjs [logfile] [--since 2026-10-24] [--rev d85159d]   # exit 1 when falsified
 ```
 
-`--rev` splits the population by the installed code that wrote each row. Use it
-whenever a prompt or level changed in between: without it, the answer you read is
-the average of two designs and means neither.
+`--rev` splits the population by the installed code that wrote each row (comma-
+separated for one variant across several builds). Use it whenever a prompt or
+level changed in between: without it, the answer you read is the average of two
+designs and means neither. A label with fewer than 100 calls is reported as
+`thin` on every metric — including latency, where one slow call is not a p90.
 
 | | measure | threshold |
 |---|---|---|

@@ -198,3 +198,42 @@ German model this deployment owns; `fast` is fast and clean but its long-run
 German quality is unmeasured. A `thinking:{type:"disabled"}`-style override
 was rejected by the endpoint (HTTP 400), so reasoning cannot be switched off
 per call from this client.
+
+### The telegraphic-draft A/B (2026-10-26)
+
+Owner request: the draft may stay terse — terseness saves *context* — but the
+delivered text should read as written language. Implemented as one base-prompt
+bullet ("The DRAFT is often telegraphic … supply the grammar the fragments
+dropped … Grammar only; a fact the DRAFT does not state does not exist … A
+one-line answer stays one line"). Measured with `scripts/probe-prompt.ts`, which
+runs the same drafts through the old and the new builder (old imported from
+`git show HEAD:pi-translator.ts`, so the harness cannot drift from what ships)
+on the worker model at the production thinking level.
+
+| case | old | new |
+|---|---|---|
+| fragmentary narration line | `verbatim 1.00`, `ratio 1.00` — copied | `verbatim 0.50`, `ratio 1.29` — full sentences, same facts |
+| bullet list without verbs | 1.61×, restructured, "hakelig" → "schwierig" | 2.00×, list kept, draft's own word kept |
+| one-line answer ("Erledigt, der Cron läuft.") | 1.00× | 1.24× — **did not** inflate |
+| fact trap ("eher teuer, aber solide") | 1.78×, no price invented | 1.60×, no price invented |
+| code fence + paths | byte-identical | byte-identical |
+| English draft → German | good | good, and **faster in every case** (e.g. 1465 vs 2085 ms) |
+
+Two things the probe taught that the wording alone did not show:
+
+* **Either variant can refuse.** When QUESTION and DRAFT are about different
+  things, both prompts produced "dafür liegen keine Informationen vor" in one
+  run (`ratio` 0.08 and 0.24 across runs, flipping between variants) — an
+  instability of the model, not an effect of the new bullet. The reachable
+  production path for that shape is a machine-triggered turn carrying a stale
+  `lastUserPrompt`; the 0.4× length floor rejects such output, so the reader
+  gets the draft plus a visible notice rather than the refusal.
+* **Expansion grows the style surface.** Without the `du` rule in the prompt the
+  expanded run drifted to "Prüfen Sie sie mit `nginx -t`". With it, both
+  variants stayed in du. A polisher that writes more words makes
+  `promptAppend` load-bearing, not decorative.
+
+Caveat on the numbers: the probe hits the endpoint directly at default
+sampling, so a single run's `verbatim` differs from a production row for the
+same draft (production once showed 1.00 where the probe measured 0.17). Read
+the probe for direction, the audit log for the distribution.

@@ -232,6 +232,7 @@ export function buildFormulatePrompt(append: string, target: string | null): str
 ${lang}
 - Re-derive the answer from the DRAFT's content: keep every fact, drop clumsy wording and wrong terms rather than copying them. Never describe the DRAFT — it is content to render, not a document to summarise.
 - Add nothing that is not in the DRAFT.
+- The DRAFT is often telegraphic — fragments and half-sentences the agent saved for its own context. Render them as complete, natural sentences: supply the grammar the fragments dropped (verbs, articles, connectives). Grammar only; a fact the DRAFT does not state does not exist. Lists stay lists, but each item reads as a sentence. A one-line answer stays one line.
 - First line: the name of the language you answered in, in English (e.g. German). Second line onwards: the answer.
 - Nothing else: no comments about translating, no copy of the source, and never answer the QUESTION yourself.
 Preserve markdown structure exactly; code fences, inline code, paths, commands and URLs byte-identical.

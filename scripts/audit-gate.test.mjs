@@ -2,6 +2,8 @@
 /** Hand-computed expectations for the gate (docs/06 R7: "run it on a fixture log
  *  with hand-computed expected values"). node scripts/audit-gate.test.mjs */
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { writeFileSync } from "node:fs";
 import { gate } from "./audit-gate.mjs";
 
 const row = (o) => ({ ts: "2026-10-24T12:00:00Z", dir: "reply", mode: "formulate", model: "sharc/worker", ms: 1000, lang: "German", ...o });
@@ -67,5 +69,29 @@ assert.equal(both.find((x) => x.model === "local/smart").falsified, true);
 // Rows from the pre-F4 versions (no mode field) are not evidence about this design.
 assert.equal(gate([{ dir: "reply", verdict: "text", model: "m", out: "漢字" }]).length, 0, "translate-era rows ignored");
 assert.equal(gate([{ dir: "prompt", mode: "formulate", verdict: "text", model: "m" }]).length, 0, "wrong direction ignored");
+
+// --rev splits the population by the installed code that wrote the row. Without
+// it, a prompt or thinking-level change is averaged with the rows from before it
+// and the number means neither variant.
+const clip = "/tmp/pt-gate-rev-fixture.jsonl";
+// rev a = 100 clean rows, rev b = 100 rows with CJK introduced. The gate exits 1
+// when it falsifies, so the exit code is itself an assertion here.
+writeFileSync(clip, [...many(100, { verdict: "text", out: "x", rev: "aaaaaaa" }), ...many(100, { verdict: "text", out: "漢字", rev: "bbbbbbb" })].map((r) => JSON.stringify(r)).join("\n") + "\n");
+const cli = (extra) => {
+	try {
+		return { code: 0, out: execFileSync(process.execPath, ["scripts/audit-gate.mjs", clip, ...extra], { encoding: "utf8" }) };
+	} catch (e) {
+		return { code: e.status, out: String(e.stdout) };
+	}
+};
+assert.match(cli([]).out, /\(200 calls/, "without --rev both installed versions are counted");
+assert.match(cli([]).out, /FALSIFIED/, "and the bad half poisons the merged number");
+const a = cli(["--rev", "aaaaaaa"]);
+assert.equal(a.code, 0, "the clean version alone does not falsify");
+assert.match(a.out, /\(100 calls/, "--rev counts one installed version only");
+const b = cli(["--rev", "bbbbbbb"]);
+assert.equal(b.code, 1, "the bad version alone still falsifies");
+assert.match(b.out, /\(100 calls/, "its rows are its own, not the other rev's");
+assert.match(cli(["--rev", "ccccccc"]).out, /nothing measured/, "an unknown rev says so instead of reporting 0%");
 
 console.log("audit-gate.test.mjs: all assertions passed");

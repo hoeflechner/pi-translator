@@ -4,7 +4,7 @@
  * polisher" (docs/06 R7). Reads the audit log, prints M1-M5 per worker label,
  * exits 1 when any metric is FALSIFIED.
  *
- *   node scripts/audit-gate.mjs [/data/bernhard/.pi/pi-translator.jsonl] [--since 2026-10-24]
+ *   node scripts/audit-gate.mjs [/data/bernhard/.pi/pi-translator.jsonl] [--since 2026-10-24] [--rev d85159d]
  *
  * R7 defined these over the F2 `dir:"polish"` population. F4 has one call per
  * answer, so the population is `dir:"reply"` rows with `mode:"formulate"`,
@@ -80,8 +80,13 @@ function percentile(a, p) {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
 	const args = process.argv.slice(2);
-	const since = args.includes("--since") ? Date.parse(args[args.indexOf("--since") + 1]) : 0;
-	const file = args.find((a) => !a.startsWith("--") && a !== args[args.indexOf("--since") + 1]) ?? "/data/bernhard/.pi/pi-translator.jsonl";
+	// Two value flags; a helper, because picking a flag's value out of argv by
+	// indexOf is exactly how the file argument would silently become "2026-11-01".
+	const val = (flag) => (args.includes(flag) ? args[args.indexOf(flag) + 1] : undefined);
+	const since = val("--since") ? Date.parse(val("--since")) : 0;
+	const rev = val("--rev"); // compare prompt/code variants: the rev field is in every row
+	const flagvals = [val("--since"), val("--rev")].filter((v) => v !== undefined);
+	const file = args.find((a) => !a.startsWith("--") && !flagvals.includes(a)) ?? "/data/bernhard/.pi/pi-translator.jsonl";
 	const rows = readFileSync(file, "utf8")
 		.split("\n")
 		.filter(Boolean)
@@ -92,7 +97,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 				return null;
 			}
 		})
-		.filter((r) => r && (!since || Date.parse(r.ts) >= since));
+		.filter((r) => r && (!since || Date.parse(r.ts) >= since) && (!rev || String(r.rev) === rev));
 	const res = gate(rows);
 	if (!res.length) {
 		console.log(`no formulate-mode reply rows in ${file} — nothing measured (pre-F4 log, or the host was never restarted)`);

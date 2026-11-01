@@ -116,8 +116,12 @@ The owner's bet — *"the agent's own model is a good enough polisher"* — has 
 falsification gate, and it runs against the audit log:
 
 ```bash
-node scripts/audit-gate.mjs [logfile] [--since 2026-10-24]   # exit 1 when falsified
+node scripts/audit-gate.mjs [logfile] [--since 2026-10-24] [--rev d85159d]   # exit 1 when falsified
 ```
+
+`--rev` splits the population by the installed code that wrote each row. Use it
+whenever a prompt or level changed in between: without it, the answer you read is
+the average of two designs and means neither.
 
 | | measure | threshold |
 |---|---|---|

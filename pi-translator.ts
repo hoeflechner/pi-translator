@@ -412,14 +412,17 @@ const CALL_TIMEOUT_MS = 25000;
 // a hang is a hang, and a 5-minute freeze before an ask_user form ships would be
 // a worse bug than the one this raises.
 const FORMULATE_TIMEOUT_MS = 300000;
-// Thinking level for the formulation call. "minimal" is NOT a level this class
-// of endpoint serves (field: "Unexpected reasoning effort minimal. Supported
-// types are xhigh (default), medium, and low") — every request was rejected and
-// the probe retry landed on xhigh, i.e. 12,788 completion tokens for 6,700
-// characters. Ask for a level that exists. "low"/"medium" answer in 9-15 s but
-// COPY the draft (ratio 1.00, ~1,850 tok) instead of re-deriving it, so the
-// level is the polish knob: measured via verdict:"noop" per label in the gate.
-const FORMULATE_REASONING = "medium";
+// Thinking level for the formulation call. EMPTY = send no level at all and let
+// the endpoint use its own default (owner decision 2026-11-01: "setze es garnicht,
+// weil wenn das jeweilige model keine oder andere settings hat wird es unpraktisch").
+// A level we choose breaks on models that expose no such option or name their
+// levels differently — this class of endpoint outright rejects "minimal"
+// ("Supported types are xhigh (default), medium, and low"). Field numbers, for
+// the record: this worker's default is xhigh (12,788 completion tokens for 6,700
+// chars, median answer latency up from 16.9 s), while "low"/"medium" answer in
+// 9-15 s but COPY the draft (ratio 1.00) instead of re-deriving it. So the level
+// is the polish knob — and it belongs to the endpoint, not to us.
+const FORMULATE_REASONING = "";
 /** Read per call, not at module load: lets a test drive the timeout path
  *  without waiting for the real ceiling. */
 export function callCeilingMs(formulate: boolean): number {
@@ -445,11 +448,14 @@ async function callTranslator(ctx: any, model: any, systemPrompt: string, payloa
 	const relay = () => ctrl.abort();
 	ctx.signal?.addEventListener?.("abort", relay);
 	const opts: any = { signal: ctrl.signal };
-	if (!reasoningUnsupported.has(key)) opts.reasoning = reasoning;
+	if (reasoning && !reasoningUnsupported.has(key)) opts.reasoning = reasoning;
 	try {
 		const out = await ctx.modelRegistry.streamSimple(model, request, opts).result();
 		const text = (out.content as any[]).filter((b) => b.type === "text").map((b) => b.text).join("").trim();
-		if (text || reasoningUnsupported.has(key)) return out;
+		// The probe only exists for a level we asked for: with no option sent there is
+		// nothing to fall back from, and retrying an empty answer would be a plain
+		// second call, not a probe.
+		if (!reasoning || text || reasoningUnsupported.has(key)) return out;
 		reasoningUnsupported.add(key);
 		return await ctx.modelRegistry.streamSimple(model, request, { signal: ctrl.signal }).result();
 	} finally {

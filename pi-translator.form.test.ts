@@ -97,10 +97,12 @@ async function main() {
 		assert.equal(delivered, "Kurz gesagt: Das Depot soll Dividenden verbuchen.", "the language-name line is stripped");
 		assert.ok(!/^German\b/m.test(delivered), "no header line in what the user reads");
 		assert.equal(r.message.piTranslator.original, "In short: the depot should book dividends.", "the draft stays reachable for the model (F1)");
-		// "minimal" is not a thinking level this class of endpoint serves — asking
-		// for it cost a rejected request plus a probe retry onto xhigh (12,788
-		// completion tokens for 6,700 chars). Ask for a level that exists.
-		assert.equal(seenOpts.at(-1)?.reasoning, "medium", "formulate asks for a supported thinking level");
+		// No thinking level is sent in formulate mode at all (owner decision
+		// 2026-11-01): a level we pick breaks on models that expose none or name them
+		// differently, and the re-derivation we want comes from the endpoint's own
+		// default. Asking for "minimal" once cost a rejected request plus a probe
+		// retry onto xhigh — 12,788 completion tokens for 6,700 chars.
+		assert.equal(seenOpts.at(-1)?.reasoning, undefined, "formulate sends no thinking level — the endpoint default decides");
 	});
 
 	await t("a formulation that changed nothing is a logged noop, not a silent pass", async () => {
@@ -229,9 +231,9 @@ async function main() {
 		reply = { stopReason: "error", content: [] }; // the fluke class IS retried
 		const before2 = counts.formulate;
 		await handlers.message_end({ message: msg }, ctx);
-		// 3, not 2: the first attempt is itself two calls (reasoning "minimal" rejected
-		// with empty content → probe marks the model, one call without the option).
-		assert.equal(counts.formulate - before2, 3, "transport error gets its one retry (plus the reasoning probe)");
+		// 2, not 3: with no thinking level sent there is no probe to pay — an empty
+		// answer is a transport failure, retried exactly once.
+		assert.equal(counts.formulate - before2, 2, "transport error gets its one retry, no probe");
 		reply = DE_REPLY;
 	});
 

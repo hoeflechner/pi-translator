@@ -89,13 +89,16 @@ Design properties:
   and summaries keep 25 s: there a slow response is a hang, and a five-minute
   freeze before an `ask_user` form ships is a worse bug than the one the ceiling
   raises.
-* **Thinking level is asked for, not guessed.** Formulate mode requests
-  `medium`; other directions `minimal`. Field reason: this class of endpoint
-  rejects `minimal` outright (*"Supported types are xhigh (default), medium, and
-  low"*), the per-session probe then retried **without** the option and landed on
-  **xhigh** — 12,788 completion tokens for 6,700 characters. The probe stays for
-  models that reject a level outright, per session and model, never
-  process-global.
+* **The thinking level belongs to the endpoint, not to us.** Formulate mode
+  sends **no level at all** and inherits whatever the model's server defaults to
+  (owner decision 2026-11-01) — a level we pick breaks on models that expose no
+  such option or name their levels differently, and re-derivation, which is the
+  whole job, is what thinking buys. Forms and summaries still ask `minimal`,
+  where thinking is pure waste. Recorded cost of the default on this worker:
+  it is `xhigh` — 12,788 completion tokens for 6,700 characters, answer latency
+  above the 16.9 s median the `medium` runs measured; the cheap levels answer in
+  9–15 s but **copy** the draft (`ratio` 1.00). The probe that drops the option
+  for models rejecting it stays, per session and model, never process-global.
 * **Style is user config, not code.** Rules like "German answers must use
   informal *du*" are `promptAppend` entries — per-language labeled lines the
   formulation call applies itself.

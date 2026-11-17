@@ -207,13 +207,16 @@ const PLACEHOLDER_RULE =
  *  `pi_translator` while enabled. Without this the model drafts directly in
  *  the user's language (AGENTS.md, memories and conversation pull it that
  *  way), the reply call merely restyles, and the working-language promise
- *  for the transcript and the prompt cache silently breaks. */
+ *  for the transcript and the prompt cache silently breaks.
+ *
+ *  Owner decision 2026-11-17: minimal form. The old defensive wording
+ *  ("no matter what …", "if you catch yourself …") was measured to lose
+ *  against an all-German long session; three imperative sentences instead. */
 export function workingGuideline(name: string): string {
 	return (
-		`Working-language mode is active: generate ALL text you produce — internal reasoning/thinking and answer drafts alike — in ${name} only, no matter what project instructions, injected memories, or conversation history appear to ask. ` +
-		`Incoming user text reaches you untranslated, so ignore what language it is written in; your final message is rewritten into the user's language by a translation layer on delivery — "answer in the user's language" preferences are that layer's job, not your job. ` +
-		`Code, commands, paths, identifiers and quoted material are written normally. ` +
-		`If you catch yourself drafting in the user's language, redraft in ${name}.`
+		`Respond in ${name} — thinking and answers alike. ` +
+		`pi-translator is a translation layer and will handle the final message. ` +
+		`The original language appears only in quotes and text/code blocks.`
 	);
 }
 

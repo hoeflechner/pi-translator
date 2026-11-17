@@ -124,11 +124,11 @@ t("promptAppend reaches the shipped formulate prompt", () => {
 });
 
 /* worker-side system-prompt guideline (thinking + drafting language) */
-t("workingGuideline forces working language for reasoning AND drafts", () => {
+t("workingGuideline names language + thinking, minimal form", () => {
 	const s = workingGuideline("English");
-	assert.ok(/reasoning|thinking/i.test(s), "must cover internal reasoning");
-	assert.ok(s.includes("in English only"), "must name the working language");
-	assert.ok(/even when project instructions|injected memories/i.test(s), "must override AGENTS.md/memory pull");
+	assert.ok(/thinking/i.test(s), "must cover internal thinking");
+	assert.ok(s.startsWith("Respond in English"), "must name the working language");
+	assert.ok(s.length < 220, "owner decision 2026-11-17: minimal form, no defensive clauses");
 	assert.ok(!/\bdu\b/.test(s) && !s.includes("„du"), "language-agnostic: no per-language text shipped");
 });
 
@@ -328,9 +328,9 @@ const machine = (a: any) =>
 
 t("workingGuideline no longer promises a translated input", () => {
 	const g = workingGuideline("English");
-	assert.ok(!/translated into English before you read/i.test(g), "prompt translation is gone — the guideline must not lie about it");
-	assert.ok(/untranslated/i.test(g), "must state the user text arrives as written");
-	assert.ok(/translation layer on delivery/i.test(g), "delivery formulation stays");
+	assert.ok(!/translated (into|to)\b/i.test(g), "prompt translation is gone — the guideline must not lie about it");
+	assert.ok(/translation layer/i.test(g), "the delivery layer is named");
+	assert.ok(/final message/i.test(g), "the layer owns the final message, the agent the work");
 });
 
 t("parseLanguageName accepts only a name", () => {

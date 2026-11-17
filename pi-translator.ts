@@ -10,7 +10,10 @@
  *                                            drafts are re-derived, not passed
  *   before every LLM call, `context` restores the agent's OWN working-language
  *   drafts and tool arguments (F1) → the model never reads back its own output
- *   through the target language.
+ *   through the target language — and appends the one-line working-language
+ *   reminder at the tail of the context (a static system section loses against
+ *   a long same-language context: measured 97/100 German drafts with the
+ *   section present).
  *
  * The formulation answers with the language name on its first line; that header
  * is parsed and stripped before the guards and before delivery. Guards: the
@@ -218,6 +221,15 @@ export function workingGuideline(name: string): string {
 		`pi-translator is a translation layer and will handle the final message. ` +
 		`The original language appears only in quotes and text/code blocks.`
 	);
+}
+
+/** Per-call tail reminder (owner decision 2026-11-17): the mandate repeats at
+ *  the most recent position of every LLM call, where context rot is weakest.
+ *  Context-only — pi hands the handler a clone per request, so nothing is
+ *  persisted and the previous call's full context stays the cache-matching
+ *  prefix. Returns a new array; the input is never mutated. */
+export function withReminder(messages: readonly any[], name: string): any[] {
+	return [...messages, { role: "user", content: `Answer in ${name}.` }];
 }
 
 /** Owner decision (docs/06 F4): every answer is formulated for the reader, so
@@ -903,6 +915,7 @@ export default function (pi: ExtensionAPI) {
 	// the transcript keeps the user-language deliveries. Runs regardless of
 	// `enabled`: the invariant belongs to the data, not the toggle.
 	pi.on("context", async (event: any, ctx: any) => {
+		ensureSettings(ctx);
 		let restored = 0;
 		let out = event.messages;
 		for (let i = 0; i < event.messages.length; i++) {
@@ -955,6 +968,7 @@ export default function (pi: ExtensionAPI) {
 			restored++;
 		}
 		if (restored > 0) dbg(`context: ${restored} message(s) restored to working language for the model`);
+		if (enabled) out = withReminder(out, workingName());
 		if (out !== event.messages) return { messages: out };
 	});
 }

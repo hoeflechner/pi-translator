@@ -1,10 +1,30 @@
 # 06 — v3: what shipped, and the decisions behind it
 
-**STATUS 2026-10-24: F3 and F4 IMPLEMENTED — this is the current design. No
+**STATUS 2026-11-17: F3 and F4 IMPLEMENTED — this is the current design. No
 pre-start call and no delivery gate remain: every answer goes through one
 always-on formulation call. F1 as a gate design is dead and F2's repair
 semantics were absorbed into that call; their sections stay below as the
 reasoning, marked as such.**
+
+## 2026-11-17 — the mandate got shorter, and it repeats
+
+Measured: the `pi_translator` system section arrives (verified in a live
+system prompt) yet 97 of 100 drafts are German in long all-German sessions —
+the static block loses to local context. Two changes (owner decision):
+
+- `workingGuideline()` is now three imperatives: respond in the working
+  language (thinking and answers alike), the translation layer owns the final
+  message, original language only in quotes and text/code blocks. The
+  defensive clauses ("no matter what …", "if you catch yourself …") are gone.
+- `withReminder()`: the `context` handler appends one user message —
+  `Answer in English.` — at the **tail of every LLM call** (gated on
+  `enabled`). Context-only: pi hands the handler a clone per request, nothing
+  is persisted, and the previous call's full context stays the cache-matching
+  prefix. Tail position, not "after each user prompt": in tool loops the
+  reminder must sit where generation happens, not where the turn started.
+
+Falsification: audit rows carry `rev`; compare the German share of `in`
+(previously 97/100) across the `e77e806` → reminder rev boundary.
 
 ## F4 — the gate died with the thing it gated (owner decisions, same day)
 

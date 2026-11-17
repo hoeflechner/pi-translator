@@ -3,7 +3,7 @@
  * runtime. Run: node --experimental-strip-types pi-translator.test.ts
  */
 import assert from "node:assert/strict";
-import { proseOnly, scriptsOf, scriptGuardOk, lengthOk, renderAppend, buildPromptTranslatePrompt, workingGuideline, maskProtected, unmaskProtected, differsFromSource, replaceText, collectUiStrings, applyUiStrings, parseBatchReply, buildBatchTranslatePrompt, buildFormulatePrompt, parseLanguageName, canonicalLangName, splitLanguageHeader, normText, ratioOf, callCeilingMs } from "./pi-translator.ts";
+import { proseOnly, scriptsOf, scriptGuardOk, lengthOk, renderAppend, buildPromptTranslatePrompt, workingGuideline, withReminder, maskProtected, unmaskProtected, differsFromSource, replaceText, collectUiStrings, applyUiStrings, parseBatchReply, buildBatchTranslatePrompt, buildFormulatePrompt, parseLanguageName, canonicalLangName, splitLanguageHeader, normText, ratioOf, callCeilingMs } from "./pi-translator.ts";
 
 let n = 0;
 const t = (name: string, fn: () => void) => {
@@ -331,6 +331,15 @@ t("workingGuideline no longer promises a translated input", () => {
 	assert.ok(!/translated (into|to)\b/i.test(g), "prompt translation is gone — the guideline must not lie about it");
 	assert.ok(/translation layer/i.test(g), "the delivery layer is named");
 	assert.ok(/final message/i.test(g), "the layer owns the final message, the agent the work");
+});
+
+t("withReminder appends the one-line mandate at the tail, input untouched", () => {
+	const msgs = [{ role: "user", content: "hallo" }, { role: "assistant", content: "hi" }];
+	const out = withReminder(msgs, "English");
+	assert.equal(out.length, 3);
+	assert.deepEqual(out[2], { role: "user", content: "Answer in English." });
+	assert.equal(msgs.length, 2, "input array not mutated");
+	assert.equal(out[0].content, "hallo");
 });
 
 t("parseLanguageName accepts only a name", () => {

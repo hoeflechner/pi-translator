@@ -17,11 +17,16 @@ the static block loses to local context. Two changes (owner decision):
   message, original language only in quotes and text/code blocks. The
   defensive clauses ("no matter what …", "if you catch yourself …") are gone.
 - `withReminder()`: the `context` handler appends one user message —
-  `Answer in English.` — at the **tail of every LLM call** (gated on
-  `enabled`). Context-only: pi hands the handler a clone per request, nothing
-  is persisted, and the previous call's full context stays the cache-matching
-  prefix. Tail position, not "after each user prompt": in tool loops the
-  reminder must sit where generation happens, not where the turn started.
+  `Answer in English.` — at the **tail, but only when the tail is a user
+  message** (gated on `enabled`): once at the start of a turn. Context-only:
+  pi hands the handler a clone per request, nothing is persisted, and the
+  previous call's full context stays the cache-matching prefix. The initial
+  per-call placement was rolled back the same day on owner evidence: seen
+  after every tool result the model read it as user insistence ("the user
+  keeps saying 'Answer in English'") and began smuggling whole answers into
+  fenced code blocks — the layer's own code-block pass-through became the
+  escape hatch. Mid-loop calls (toolResult/assistant tails) and
+  machine-triggered turns (custom tails) get no reminder.
 
 Falsification: audit rows carry `rev`; compare the German share of `in`
 (previously 97/100) across the `e77e806` → reminder rev boundary.

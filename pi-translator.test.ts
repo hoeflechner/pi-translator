@@ -333,13 +333,19 @@ t("workingGuideline no longer promises a translated input", () => {
 	assert.ok(/final message/i.test(g), "the layer owns the final message, the agent the work");
 });
 
-t("withReminder appends the one-line mandate at the tail, input untouched", () => {
-	const msgs = [{ role: "user", content: "hallo" }, { role: "assistant", content: "hi" }];
-	const out = withReminder(msgs, "English");
-	assert.equal(out.length, 3);
-	assert.deepEqual(out[2], { role: "user", content: "Answer in English." });
-	assert.equal(msgs.length, 2, "input array not mutated");
-	assert.equal(out[0].content, "hallo");
+t("withReminder: only at a user-message tail, once per turn", () => {
+	const userMsgs = [{ role: "user", content: "hallo" }];
+	const out = withReminder(userMsgs, "English");
+	assert.equal(out.length, 2);
+	assert.deepEqual(out[1], { role: "user", content: "Answer in English." });
+	assert.equal(userMsgs.length, 1, "input array not mutated");
+	// mid-loop and machine-triggered tails must NOT get the reminder —
+	// repeated tails made the model read it as user insistence and escape
+	// the layer via fenced code blocks (owner report 2026-11-17)
+	for (const tail of [[{ role: "assistant", content: "hi" }], [{ role: "toolResult", content: "ok" }], [{ role: "custom", content: "delegation_result" }], []]) {
+		const ref = withReminder(tail, "English");
+		assert.equal(ref, tail, `same array (no append) for tail role ${tail[0]?.role ?? "empty"}`);
+	}
 });
 
 t("parseLanguageName accepts only a name", () => {

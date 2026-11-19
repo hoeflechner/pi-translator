@@ -223,12 +223,16 @@ export function workingGuideline(name: string): string {
 	);
 }
 
-/** Per-call tail reminder (owner decision 2026-11-17): the mandate repeats at
- *  the most recent position of every LLM call, where context rot is weakest.
- *  Context-only — pi hands the handler a clone per request, so nothing is
- *  persisted and the previous call's full context stays the cache-matching
- *  prefix. Returns a new array; the input is never mutated. */
-export function withReminder(messages: readonly any[], name: string): any[] {
+/** Per-turn working-language reminder (owner decision 2026-11-17, placement
+ *  fixed same day): appended at the tail only when the tail IS a user
+ *  message — i.e. once at the start of a turn. Appending it to every LLM
+ *  call made the model read it as repeated user insistence ("the user keeps
+ *  saying 'Answer in English'") and it started smuggling prose into fenced
+ *  code blocks to escape the layer — an exploit the guideline's own
+ *  "text/code blocks" pass-through hands it. Returns the SAME array when
+ *  nothing is appended, so the handler's change detection keeps working. */
+export function withReminder(messages: any[], name: string): any[] {
+	if (messages.length === 0 || messages[messages.length - 1].role !== "user") return messages;
 	return [...messages, { role: "user", content: `Answer in ${name}.` }];
 }
 

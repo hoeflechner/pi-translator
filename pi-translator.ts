@@ -233,7 +233,10 @@ export function workingGuideline(name: string): string {
  *  nothing is appended, so the handler's change detection keeps working. */
 export function withReminder(messages: any[], name: string): any[] {
 	if (messages.length === 0 || messages[messages.length - 1].role !== "user") return messages;
-	return [...messages, { role: "user", content: `Answer in ${name}.` }];
+	// "as usual" is load-bearing: a bare imperative reads as insistence and
+	// made the model rationalize about WHY the user keeps saying it; a
+	// habitual framing is a standing convention and needs no explanation.
+	return [...messages, { role: "user", content: `Answer in ${name}, as usual.` }];
 }
 
 /** Owner decision (docs/06 F4): every answer is formulated for the reader, so

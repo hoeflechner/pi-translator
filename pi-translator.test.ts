@@ -337,7 +337,7 @@ t("withReminder: only at a user-message tail, once per turn", () => {
 	const userMsgs = [{ role: "user", content: "hallo" }];
 	const out = withReminder(userMsgs, "English");
 	assert.equal(out.length, 2);
-	assert.deepEqual(out[1], { role: "user", content: "Answer in English." });
+	assert.deepEqual(out[1], { role: "user", content: "Answer in English, as usual." });
 	assert.equal(userMsgs.length, 1, "input array not mutated");
 	// mid-loop and machine-triggered tails must NOT get the reminder —
 	// repeated tails made the model read it as user insistence and escape
